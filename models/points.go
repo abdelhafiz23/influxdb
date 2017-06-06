@@ -137,6 +137,9 @@ const (
 
 	// Empty is used to indicate that there is no field.
 	Empty
+
+	// Unsigned indicates the field's type is an unsigned integer.
+	Unsigned
 )
 
 // FieldIterator provides a low-allocation interface to iterate through a point's fields.

@@ -848,6 +848,14 @@ func (e *Engine) WritePoints(points []models.Point) error {
 					return err
 				}
 				v = NewIntegerValue(t, iv)
+			case models.Unsigned:
+				// TODO(sgc): add uint64
+				panic("not implemented")
+			//	iv, err := iter.UnsignedValue()
+			//	if err != nil {
+			//		return err
+			//	}
+			//	v = NewUnsignedValue(t, iv)
 			case models.String:
 				v = NewStringValue(t, iter.StringValue())
 			case models.Boolean:
@@ -1981,6 +1989,10 @@ func (e *Engine) buildCursor(measurement, seriesKey string, ref *influxql.VarRef
 		return e.buildFloatCursor(measurement, seriesKey, ref.Val, opt)
 	case influxql.Integer:
 		return e.buildIntegerCursor(measurement, seriesKey, ref.Val, opt)
+	case influxql.Unsigned:
+		// TODO(sgc): cursor support
+		//return e.buildIntegerCursor(measurement, seriesKey, ref.Val, opt)
+		panic("not implemented")
 	case influxql.String:
 		return e.buildStringCursor(measurement, seriesKey, ref.Val, opt)
 	case influxql.Boolean:
@@ -2033,6 +2045,8 @@ func tsmFieldTypeToInfluxQLDataType(typ byte) (influxql.DataType, error) {
 		return influxql.Float, nil
 	case BlockInteger:
 		return influxql.Integer, nil
+	case BlockUnsigned:
+		return influxql.Unsigned, nil
 	case BlockBoolean:
 		return influxql.Boolean, nil
 	case BlockString:
