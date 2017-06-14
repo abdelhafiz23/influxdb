@@ -1,5 +1,6 @@
 package query
 
+/*
 type Node struct {
 	Name    string
 	Inputs  []*Edge
@@ -75,3 +76,4 @@ func TopologicalSort(want []*Node) ([]*Node, error) {
 	}
 	return L, nil
 }
+*/
