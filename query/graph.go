@@ -7,14 +7,21 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 )
 
-type Node struct {
-	// Input is the Edge that creates this Node.
-	// All Nodes must have an input edge.
-	Input Edge
+// Edge connects two nodes in a directed graph. The Edge contains an input
+// Node, which is where it receives its input from. The Edge then holds onto
+// the iterator created by the Node so it can be sent to the output Node.
+//
+// Every Edge is in a non-ready state or a ready state. When it is in a
+// non-ready state, it is still waiting for its input node to send the edge its
+// iterator. When it is in a ready state, the iterator is ready to be consumed
+// by the output node.
+type Edge struct {
+	// Input is the Node that creates the Iterator for this Edge.
+	Input Node
 
-	// Output is the Edge that will receive the Iterator created for this Node.
-	// A node does not need to have an output edge.
-	Output Edge
+	// Output is the Node that will receive the Iterator created for this Edge.
+	// An edge does not need to have an output edge.
+	Output Node
 
 	itr   influxql.Iterator
 	ready bool
@@ -23,46 +30,59 @@ type Node struct {
 
 // Iterator returns the Iterator created for this Node by the Input edge.
 // If the Node returns false from Ready(), this function will panic.
-func (n *Node) Iterator() influxql.Iterator {
-	n.mu.RLock()
-	if !n.ready {
-		n.mu.RUnlock()
-		panic("attempted to retrieve an iterator from a node before it was ready")
+func (e *Edge) Iterator() influxql.Iterator {
+	e.mu.RLock()
+	if !e.ready {
+		e.mu.RUnlock()
+		panic("attempted to retrieve an iterator from an edge before it was ready")
 	}
-	itr := n.itr
-	n.mu.RUnlock()
+	itr := e.itr
+	e.mu.RUnlock()
 	return itr
 }
 
-// SetIterator marks this Node as ready and sets the Iterator as the returned
-// iterator. If the Node has already been set, this panics. This should only be
-// called from the Input Edge.
-func (n *Node) SetIterator(itr influxql.Iterator) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+// SetIterator marks this Edge as ready and sets the Iterator as the returned
+// iterator. If the Edge has already been set, this panics. This should only be
+// called from the Input Node.
+func (e *Edge) SetIterator(itr influxql.Iterator) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	if n.ready {
+	if e.ready {
 		panic("unable to call SetIterator on the same node twice")
 	}
-	n.itr = itr
-	n.ready = true
+	e.itr = itr
+	e.ready = true
 }
 
-func (n *Node) Ready() (ready bool) {
-	n.mu.RLock()
-	ready = n.ready
-	n.mu.RUnlock()
+func (e *Edge) Ready() (ready bool) {
+	e.mu.RLock()
+	ready = e.ready
+	e.mu.RUnlock()
 	return ready
 }
 
-type Edge interface {
-	Inputs() []*Node
-	Outputs() []*Node
+type Node interface {
+	// Description returns a brief description about what this node does.  This
+	// should include details that describe what the node will do based on the
+	// current configuration of the node.
+	Description() string
+
+	// Inputs returns the Edges that produce Iterators that will be consumed by
+	// this Node.
+	Inputs() []*Edge
+
+	// Outputs returns the Edges that will receive an Iterator from this Node.
+	Outputs() []*Edge
+
+	// Execute executes the Node and transmits the created Iterators to the
+	// output edges.
 	Execute() error
 }
 
-func AllInputsReady(e Edge) bool {
-	inputs := e.Inputs()
+// AllInputsReady determines if all of the input edges for a node are ready.
+func AllInputsReady(n Node) bool {
+	inputs := n.Inputs()
 	if len(inputs) == 0 {
 		return true
 	}
@@ -77,28 +97,34 @@ func AllInputsReady(e Edge) bool {
 
 type IteratorCreator struct {
 	Measurement *influxql.Measurement
-	OutputNode  Node
+	Output      Edge
 }
 
-func (ic *IteratorCreator) Inputs() []*Node  { return nil }
-func (ic *IteratorCreator) Outputs() []*Node { return []*Node{&ic.OutputNode} }
+func (ic *IteratorCreator) Description() string {
+	return fmt.Sprintf("create iterator for %s", ic.Measurement)
+}
+
+func (ic *IteratorCreator) Inputs() []*Edge  { return nil }
+func (ic *IteratorCreator) Outputs() []*Edge { return []*Edge{&ic.Output} }
 
 func (ic *IteratorCreator) Execute() error {
-	fmt.Println("create iterator", ic.Measurement)
-	ic.OutputNode.SetIterator(nil)
+	ic.Output.SetIterator(nil)
 	return nil
 }
 
 type Merge struct {
-	InputNodes []*Node
-	OutputNode Node
+	InputNodes []*Edge
+	Output     Edge
 }
 
-func (m *Merge) Inputs() []*Node  { return m.InputNodes }
-func (m *Merge) Outputs() []*Node { return []*Node{&m.OutputNode} }
+func (m *Merge) Description() string {
+	return fmt.Sprintf("merge %d nodes", len(m.InputNodes))
+}
+
+func (m *Merge) Inputs() []*Edge  { return m.InputNodes }
+func (m *Merge) Outputs() []*Edge { return []*Edge{&m.Output} }
 
 func (m *Merge) Execute() error {
-	fmt.Printf("merge %d nodes\n", len(m.InputNodes))
-	m.OutputNode.SetIterator(nil)
+	m.Output.SetIterator(nil)
 	return nil
 }

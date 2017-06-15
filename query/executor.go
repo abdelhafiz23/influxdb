@@ -6,24 +6,24 @@ import (
 
 type Plan struct {
 	ready *list.List
-	want  map[*Node]struct{}
+	want  map[*Edge]struct{}
 }
 
 func NewPlan() *Plan {
 	return &Plan{
 		ready: list.New(),
-		want:  make(map[*Node]struct{}),
+		want:  make(map[*Edge]struct{}),
 	}
 }
 
-func (p *Plan) AddTarget(n *Node) {
-	if _, ok := p.want[n]; ok {
+func (p *Plan) AddTarget(e *Edge) {
+	if _, ok := p.want[e]; ok {
 		return
 	}
 
-	p.want[n] = struct{}{}
-	if inputs := n.Input.Inputs(); len(inputs) == 0 {
-		p.ready.PushBack(n.Input)
+	p.want[e] = struct{}{}
+	if inputs := e.Input.Inputs(); len(inputs) == 0 {
+		p.ready.PushBack(e.Input)
 		return
 	} else {
 		for _, input := range inputs {
@@ -32,10 +32,10 @@ func (p *Plan) AddTarget(n *Node) {
 	}
 }
 
-func (p *Plan) FindWork() Edge {
+func (p *Plan) FindWork() Node {
 	front := p.ready.Front()
 	if front != nil {
-		return p.ready.Remove(front).(Edge)
+		return p.ready.Remove(front).(Node)
 	}
 	return nil
 }
@@ -43,10 +43,10 @@ func (p *Plan) FindWork() Edge {
 // EdgeFinished runs when notified that an Edge has finished running so the
 // Edge's output Nodes can be checked to see if their output edges are now
 // ready to be run.
-func (p *Plan) EdgeFinished(e Edge) {
-	for _, n := range e.Outputs() {
-		// All of the nodes should now be considered ready.
-		if !n.Ready() {
+func (p *Plan) NodeFinished(n Node) {
+	for _, e := range n.Outputs() {
+		// All of the edges should now be considered ready.
+		if !e.Ready() {
 			// The edge should call SetIterator on each of its output nodes
 			// after executing if there was no error.
 			panic("node is not considered ready even after its input edge has been run")
@@ -54,8 +54,8 @@ func (p *Plan) EdgeFinished(e Edge) {
 
 		// The nodes are now considered ready. Check if their output edge is
 		// now ready to be executed (if they have one).
-		if n.Output != nil && AllInputsReady(n.Output) {
-			p.ready.PushBack(n.Output)
+		if e.Output != nil && AllInputsReady(e.Output) {
+			p.ready.PushBack(e.Output)
 		}
 	}
 }
