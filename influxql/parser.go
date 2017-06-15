@@ -116,8 +116,10 @@ func (p *Parser) ParseStatement() (Statement, error) {
 		return p.parseSetPasswordUserStatement()
 	case KILL:
 		return p.parseKillQueryStatement()
+	case EXPLAIN:
+		return p.parseExplainStatement()
 	default:
-		return nil, newParseError(tokstr(tok, lit), []string{"SELECT", "DELETE", "SHOW", "CREATE", "DROP", "GRANT", "REVOKE", "ALTER", "SET", "KILL"}, pos)
+		return nil, newParseError(tokstr(tok, lit), []string{"SELECT", "DELETE", "SHOW", "CREATE", "DROP", "GRANT", "REVOKE", "ALTER", "SET", "KILL", "EXPLAIN"}, pos)
 	}
 }
 
@@ -318,6 +320,22 @@ func (p *Parser) parseKillQueryStatement() (*KillQueryStatement, error) {
 		p.unscan()
 	}
 	return &KillQueryStatement{QueryID: qid, Host: host}, nil
+}
+
+// parseExplainStatement parses a string and returns an ExplainStatement.
+// This function assumes the EXPLAIN token has already been consumed.
+func (p *Parser) parseExplainStatement() (*ExplainStatement, error) {
+	tok, pos, lit := p.scanIgnoreWhitespace()
+	switch tok {
+	case SELECT:
+		stmt, err := p.parseSelectStatement(targetNotRequired)
+		if err != nil {
+			return nil, err
+		}
+		return &ExplainStatement{Statement: stmt}, nil
+	default:
+		return nil, newParseError(tokstr(tok, lit), []string{"SELECT"}, pos)
+	}
 }
 
 // parseCreateSubscriptionStatement parses a string and returns a CreateSubscriptionStatement.

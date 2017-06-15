@@ -2237,6 +2237,22 @@ func TestParser_ParseStatement(t *testing.T) {
 			stmt: &influxql.DropUserStatement{Name: "jdoe"},
 		},
 
+		// EXPLAIN SELECT ...
+		{
+			s: `EXPLAIN SELECT * FROM cpu`,
+			stmt: &influxql.ExplainStatement{
+				Statement: &influxql.SelectStatement{
+					Fields: []*influxql.Field{{
+						Expr: &influxql.Wildcard{},
+					}},
+					Sources: []influxql.Source{
+						&influxql.Measurement{Name: "cpu"},
+					},
+					IsRawQuery: true,
+				},
+			},
+		},
+
 		// GRANT READ
 		{
 			s: `GRANT READ ON testdb TO jdoe`,
@@ -2537,10 +2553,10 @@ func TestParser_ParseStatement(t *testing.T) {
 		},
 
 		// Errors
-		{s: ``, err: `found EOF, expected SELECT, DELETE, SHOW, CREATE, DROP, GRANT, REVOKE, ALTER, SET, KILL at line 1, char 1`},
+		{s: ``, err: `found EOF, expected SELECT, DELETE, SHOW, CREATE, DROP, GRANT, REVOKE, ALTER, SET, KILL, EXPLAIN at line 1, char 1`},
 		{s: `SELECT`, err: `found EOF, expected identifier, string, number, bool at line 1, char 8`},
 		{s: `SELECT time FROM myseries`, err: `at least 1 non-time field must be queried`},
-		{s: `blah blah`, err: `found blah, expected SELECT, DELETE, SHOW, CREATE, DROP, GRANT, REVOKE, ALTER, SET, KILL at line 1, char 1`},
+		{s: `blah blah`, err: `found blah, expected SELECT, DELETE, SHOW, CREATE, DROP, GRANT, REVOKE, ALTER, SET, KILL, EXPLAIN at line 1, char 1`},
 		{s: `SELECT field1 X`, err: `found X, expected FROM at line 1, char 15`},
 		{s: `SELECT field1 FROM "series" WHERE X +;`, err: `found ;, expected identifier, string, number, bool at line 1, char 38`},
 		{s: `SELECT field1 FROM myseries GROUP`, err: `found EOF, expected BY at line 1, char 35`},
@@ -2843,7 +2859,7 @@ func TestParser_ParseStatement(t *testing.T) {
 		{s: `SET PASSWORD FOR dejan`, err: `found EOF, expected = at line 1, char 24`},
 		{s: `SET PASSWORD FOR dejan =`, err: `found EOF, expected string at line 1, char 25`},
 		{s: `SET PASSWORD FOR dejan = bla`, err: `found bla, expected string at line 1, char 26`},
-		{s: `$SHOW$DATABASES`, err: `found $SHOW, expected SELECT, DELETE, SHOW, CREATE, DROP, GRANT, REVOKE, ALTER, SET, KILL at line 1, char 1`},
+		{s: `$SHOW$DATABASES`, err: `found $SHOW, expected SELECT, DELETE, SHOW, CREATE, DROP, GRANT, REVOKE, ALTER, SET, KILL, EXPLAIN at line 1, char 1`},
 		{s: `SELECT * FROM cpu WHERE "tagkey" = $$`, err: `empty bound parameter`},
 	}
 

@@ -136,6 +136,7 @@ func (*DropSeriesStatement) node()            {}
 func (*DropShardStatement) node()             {}
 func (*DropSubscriptionStatement) node()      {}
 func (*DropUserStatement) node()              {}
+func (*ExplainStatement) node()               {}
 func (*GrantStatement) node()                 {}
 func (*GrantAdminStatement) node()            {}
 func (*KillQueryStatement) node()             {}
@@ -255,6 +256,7 @@ func (*DropRetentionPolicyStatement) stmt()   {}
 func (*DropSeriesStatement) stmt()            {}
 func (*DropSubscriptionStatement) stmt()      {}
 func (*DropUserStatement) stmt()              {}
+func (*ExplainStatement) stmt()               {}
 func (*GrantStatement) stmt()                 {}
 func (*GrantAdminStatement) stmt()            {}
 func (*KillQueryStatement) stmt()             {}
@@ -646,6 +648,26 @@ func (s *DropUserStatement) String() string {
 // RequiredPrivileges returns the privilege(s) required to execute a DropUserStatement.
 func (s *DropUserStatement) RequiredPrivileges() (ExecutionPrivileges, error) {
 	return ExecutionPrivileges{{Admin: true, Name: "", Privilege: AllPrivileges}}, nil
+}
+
+// ExplainStatement represents a command for explaining a statement.
+type ExplainStatement struct {
+	// Leaving this as only supporting select statements at the moment.
+	// Might expand this later to include other statements.
+	Statement *SelectStatement
+}
+
+// String returns a string representation of the explain statement.
+func (s *ExplainStatement) String() string {
+	var buf bytes.Buffer
+	_, _ = buf.WriteString("EXPLAIN ")
+	_, _ = buf.WriteString(s.Statement.String())
+	return buf.String()
+}
+
+// RequiredPrivileges returns the privilege(s) required to execute an ExplainStatement.
+func (s *ExplainStatement) RequiredPrivileges() (ExecutionPrivileges, error) {
+	return s.Statement.RequiredPrivileges()
 }
 
 // Privilege is a type of action a user can be granted the right to use.
