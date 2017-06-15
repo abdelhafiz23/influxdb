@@ -13,6 +13,7 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/models"
 	"github.com/influxdata/influxdb/monitor"
+	"github.com/influxdata/influxdb/query"
 	"github.com/influxdata/influxdb/services/meta"
 	"github.com/influxdata/influxdb/tsdb"
 )
@@ -133,6 +134,8 @@ func (e *StatementExecutor) ExecuteStatement(stmt influxql.Statement, ctx influx
 			messages = append(messages, influxql.ReadOnlyWarning(stmt.String()))
 		}
 		err = e.executeDropUserStatement(stmt)
+	case *influxql.ExplainStatement:
+		rows, err = e.executeExplainStatement(stmt, &ctx)
 	case *influxql.GrantStatement:
 		if ctx.ReadOnly {
 			messages = append(messages, influxql.ReadOnlyWarning(stmt.String()))
@@ -395,6 +398,47 @@ func (e *StatementExecutor) executeDropSubscriptionStatement(q *influxql.DropSub
 
 func (e *StatementExecutor) executeDropUserStatement(q *influxql.DropUserStatement) error {
 	return e.MetaClient.DropUser(q.Name)
+}
+
+func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement, ctx *influxql.ExecutionContext) (models.Rows, error) {
+	shards := make([]*query.Node, 0, 3)
+	for i := 0; i < 3; i++ {
+		sh := &query.IteratorCreator{
+			Measurement: &influxql.Measurement{
+				Name: "cpu",
+			},
+		}
+		sh.OutputNode.Input = sh
+		shards = append(shards, &sh.OutputNode)
+	}
+	merge := &query.Merge{InputNodes: shards}
+	for _, sh := range shards {
+		sh.Output = merge
+	}
+	merge.OutputNode.Input = merge
+
+	plan := query.NewPlan()
+	plan.AddTarget(&merge.OutputNode)
+
+	id := 1
+	rows := make([][]interface{}, 0, 4)
+	for {
+		edge := plan.FindWork()
+		if edge == nil {
+			return models.Rows{{
+				Name:    "query plan",
+				Columns: []string{"id", "name", "description", "cost", "dependencies"},
+				Values:  rows,
+			}}, nil
+		}
+		rows = append(rows, []interface{}{id, fmt.Sprintf("%T", edge), "", 0.0, ""})
+		id++
+		// Do not execute the edge. Just set the iterator to nil and move on.
+		for _, output := range edge.Outputs() {
+			output.SetIterator(nil)
+		}
+		plan.EdgeFinished(edge)
+	}
 }
 
 func (e *StatementExecutor) executeGrantStatement(stmt *influxql.GrantStatement) error {
