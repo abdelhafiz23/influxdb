@@ -1,10 +1,19 @@
 package query
 
-import "container/list"
+import (
+	"container/list"
+)
 
 type Plan struct {
 	ready *list.List
 	want  map[*Node]struct{}
+}
+
+func NewPlan() *Plan {
+	return &Plan{
+		ready: list.New(),
+		want:  make(map[*Node]struct{}),
+	}
 }
 
 func (p *Plan) AddTarget(n *Node) {
@@ -18,7 +27,7 @@ func (p *Plan) AddTarget(n *Node) {
 		return
 	} else {
 		for _, input := range inputs {
-			p.AddTarget(n)
+			p.AddTarget(input)
 		}
 	}
 }

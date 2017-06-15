@@ -1,50 +1,38 @@
 package query_test
 
 import (
-	"fmt"
 	"testing"
 
+	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/query"
 )
 
 func TestNode(t *testing.T) {
 	shards := make([]*query.Node, 0, 3)
 	for i := 0; i < 3; i++ {
-		sh := &query.Node{
-			Name: fmt.Sprintf("create shard %d", i),
+		sh := &query.IteratorCreator{
+			Measurement: &influxql.Measurement{
+				Name: "cpu",
+			},
 		}
-		shards = append(shards, sh)
+		sh.OutputNode.Input = sh
+		shards = append(shards, &sh.OutputNode)
 	}
-	merge := &query.Node{Name: "merge shards"}
-	count := &query.Node{Name: "count()"}
-	itr := &query.Node{Name: "iterator"}
-
+	merge := &query.Merge{InputNodes: shards}
 	for _, sh := range shards {
-		edge := &query.Edge{
-			Source: sh,
-			Target: merge,
+		sh.Output = merge
+	}
+	merge.OutputNode.Input = merge
+
+	plan := query.NewPlan()
+	plan.AddTarget(&merge.OutputNode)
+
+	for {
+		edge := plan.FindWork()
+		if edge == nil {
+			return
 		}
-		sh.Outputs = append(sh.Outputs, edge)
-		merge.Inputs = append(merge.Inputs, edge)
-	}
-
-	merge.Outputs = []*query.Edge{{Source: merge, Target: count}}
-	count.Inputs = merge.Outputs
-
-	count.Outputs = []*query.Edge{{Source: count, Target: itr}}
-	itr.Inputs = count.Outputs
-
-	root := query.FindRootNodes([]*query.Node{itr})
-	for _, n := range root {
-		fmt.Println(n)
-	}
-
-	nodes, err := query.TopologicalSort([]*query.Node{itr})
-	if err != nil {
-		t.Error(err)
-	}
-
-	for _, n := range nodes {
-		fmt.Println(n.Name)
+		edge.Execute()
+		plan.EdgeFinished(edge)
 	}
 }

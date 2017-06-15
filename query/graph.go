@@ -59,7 +59,6 @@ type Edge interface {
 	Inputs() []*Node
 	Outputs() []*Node
 	Execute() error
-	fmt.Stringer
 }
 
 func AllInputsReady(e Edge) bool {
@@ -74,4 +73,32 @@ func AllInputsReady(e Edge) bool {
 		}
 	}
 	return true
+}
+
+type IteratorCreator struct {
+	Measurement *influxql.Measurement
+	OutputNode  Node
+}
+
+func (ic *IteratorCreator) Inputs() []*Node  { return nil }
+func (ic *IteratorCreator) Outputs() []*Node { return []*Node{&ic.OutputNode} }
+
+func (ic *IteratorCreator) Execute() error {
+	fmt.Println("create iterator", ic.Measurement)
+	ic.OutputNode.SetIterator(nil)
+	return nil
+}
+
+type Merge struct {
+	InputNodes []*Node
+	OutputNode Node
+}
+
+func (m *Merge) Inputs() []*Node  { return m.InputNodes }
+func (m *Merge) Outputs() []*Node { return []*Node{&m.OutputNode} }
+
+func (m *Merge) Execute() error {
+	fmt.Printf("merge %d nodes\n", len(m.InputNodes))
+	m.OutputNode.SetIterator(nil)
+	return nil
 }
