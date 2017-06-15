@@ -401,24 +401,22 @@ func (e *StatementExecutor) executeDropUserStatement(q *influxql.DropUserStateme
 }
 
 func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement, ctx *influxql.ExecutionContext) (models.Rows, error) {
-	shards := make([]*query.Edge, 0, 3)
-	for i := 0; i < 3; i++ {
-		sh := &query.IteratorCreator{
-			Measurement: &influxql.Measurement{
-				Name: "cpu",
-			},
-		}
-		sh.Output.Input = sh
-		shards = append(shards, &sh.Output)
+	ic := &query.IteratorCreator{
+		Measurement: &influxql.Measurement{
+			Name: "cpu",
+		},
+		Output: &query.Edge{},
 	}
-	merge := &query.Merge{InputNodes: shards}
-	for _, sh := range shards {
-		sh.Output = merge
-	}
-	merge.Output.Input = merge
+	ic.Output.Input = ic
+
+	call := &query.FunctionCall{Name: "count"}
+	call.Input = ic.Output
+	call.Output = &query.Edge{Input: call}
+	ic.Output.Output = call
 
 	plan := query.NewPlan()
-	plan.AddTarget(&merge.Output)
+	plan.DryRun = true
+	plan.AddTarget(call.Output)
 
 	id := 1
 	rows := make([][]interface{}, 0, 4)
@@ -433,10 +431,7 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 		}
 		rows = append(rows, []interface{}{id, fmt.Sprintf("%T", node), node.Description(), 0.0, ""})
 		id++
-		// Do not execute the node. Just set the iterator to nil and move on.
-		for _, output := range node.Outputs() {
-			output.SetIterator(nil)
-		}
+		node.Execute(plan)
 		plan.NodeFinished(node)
 	}
 }

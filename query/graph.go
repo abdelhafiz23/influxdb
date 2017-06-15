@@ -77,7 +77,7 @@ type Node interface {
 
 	// Execute executes the Node and transmits the created Iterators to the
 	// output edges.
-	Execute() error
+	Execute(plan *Plan) error
 }
 
 // AllInputsReady determines if all of the input edges for a node are ready.
@@ -97,7 +97,7 @@ func AllInputsReady(n Node) bool {
 
 type IteratorCreator struct {
 	Measurement *influxql.Measurement
-	Output      Edge
+	Output      *Edge
 }
 
 func (ic *IteratorCreator) Description() string {
@@ -105,16 +105,61 @@ func (ic *IteratorCreator) Description() string {
 }
 
 func (ic *IteratorCreator) Inputs() []*Edge  { return nil }
-func (ic *IteratorCreator) Outputs() []*Edge { return []*Edge{&ic.Output} }
+func (ic *IteratorCreator) Outputs() []*Edge { return []*Edge{ic.Output} }
 
-func (ic *IteratorCreator) Execute() error {
-	ic.Output.SetIterator(nil)
+func (ic *IteratorCreator) Execute(plan *Plan) error {
+	// Create a merge node that all of our generated inputs will go into.
+	merge := &Merge{
+		Output: ic.Output,
+	}
+	merge.Output.Input = merge
+
+	// Lookup the shards.
+	shards := make([]*Edge, 0, 3)
+	for _, id := range []uint{1, 2, 3} {
+		sh := &ShardIteratorCreator{
+			Ref:     ic.Measurement.Name,
+			ShardID: id,
+			Output:  &Edge{},
+		}
+		sh.Output.Input = sh
+		sh.Output.Output = merge
+		shards = append(shards, sh.Output)
+	}
+	merge.InputNodes = shards
+
+	nodes := make([]Node, 0, len(shards))
+	for _, sh := range shards {
+		nodes = append(nodes, sh.Input)
+	}
+	plan.ScheduleWork(nodes...)
+	return nil
+}
+
+type ShardIteratorCreator struct {
+	Ref     string
+	ShardID uint
+	Output  *Edge
+}
+
+func (sh *ShardIteratorCreator) Description() string {
+	return fmt.Sprintf("create iterator for %s [shard %d]", sh.Ref, sh.ShardID)
+}
+
+func (sh *ShardIteratorCreator) Inputs() []*Edge  { return nil }
+func (sh *ShardIteratorCreator) Outputs() []*Edge { return []*Edge{sh.Output} }
+
+func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
+	if plan.DryRun {
+		sh.Output.SetIterator(nil)
+		return nil
+	}
 	return nil
 }
 
 type Merge struct {
 	InputNodes []*Edge
-	Output     Edge
+	Output     *Edge
 }
 
 func (m *Merge) Description() string {
@@ -122,9 +167,33 @@ func (m *Merge) Description() string {
 }
 
 func (m *Merge) Inputs() []*Edge  { return m.InputNodes }
-func (m *Merge) Outputs() []*Edge { return []*Edge{&m.Output} }
+func (m *Merge) Outputs() []*Edge { return []*Edge{m.Output} }
 
-func (m *Merge) Execute() error {
-	m.Output.SetIterator(nil)
+func (m *Merge) Execute(plan *Plan) error {
+	if plan.DryRun {
+		m.Output.SetIterator(nil)
+		return nil
+	}
+	return nil
+}
+
+type FunctionCall struct {
+	Name   string
+	Input  *Edge
+	Output *Edge
+}
+
+func (c *FunctionCall) Description() string {
+	return fmt.Sprintf("%s()", c.Name)
+}
+
+func (c *FunctionCall) Inputs() []*Edge  { return []*Edge{c.Input} }
+func (c *FunctionCall) Outputs() []*Edge { return []*Edge{c.Output} }
+
+func (c *FunctionCall) Execute(plan *Plan) error {
+	if plan.DryRun {
+		c.Output.SetIterator(nil)
+		return nil
+	}
 	return nil
 }

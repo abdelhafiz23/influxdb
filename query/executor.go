@@ -5,6 +5,8 @@ import (
 )
 
 type Plan struct {
+	DryRun bool
+
 	ready *list.List
 	want  map[*Edge]struct{}
 }
@@ -40,18 +42,25 @@ func (p *Plan) FindWork() Node {
 	return nil
 }
 
+func (p *Plan) ScheduleWork(nodes ...Node) {
+	for _, n := range nodes {
+		if AllInputsReady(n) {
+			p.ready.PushBack(n)
+			continue
+		}
+
+		// Add each input edge as a target.
+		for _, input := range n.Inputs() {
+			p.AddTarget(input)
+		}
+	}
+}
+
 // EdgeFinished runs when notified that an Edge has finished running so the
 // Edge's output Nodes can be checked to see if their output edges are now
 // ready to be run.
 func (p *Plan) NodeFinished(n Node) {
 	for _, e := range n.Outputs() {
-		// All of the edges should now be considered ready.
-		if !e.Ready() {
-			// The edge should call SetIterator on each of its output nodes
-			// after executing if there was no error.
-			panic("node is not considered ready even after its input edge has been run")
-		}
-
 		// The nodes are now considered ready. Check if their output edge is
 		// now ready to be executed (if they have one).
 		if e.Output != nil && AllInputsReady(e.Output) {
