@@ -405,14 +405,10 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 		Measurement: &influxql.Measurement{
 			Name: "cpu",
 		},
-		Output: &query.Edge{},
 	}
-	ic.Output.Input = ic
-
 	call := &query.FunctionCall{Name: "count"}
-	call.Input = ic.Output
-	call.Output = &query.Edge{Input: call}
-	ic.Output.Output = call
+	ic.Output, call.Input = query.AddEdge(ic, call)
+	call.Output, _ = query.AddEdge(call, nil)
 
 	plan := query.NewPlan()
 	plan.DryRun = true

@@ -28,6 +28,17 @@ type Edge struct {
 	mu    sync.RWMutex
 }
 
+// AddEdge creates a new edge with the input and output node. It returns the
+// same edge twice so the same edge can be assigned to the output edge of the
+// input node and the input edge of the output node by the caller.
+func AddEdge(in, out Node) (*Edge, *Edge) {
+	edge := &Edge{
+		Input:  in,
+		Output: out,
+	}
+	return edge, edge
+}
+
 // Iterator returns the Iterator created for this Node by the Input edge.
 // If the Node returns false from Ready(), this function will panic.
 func (e *Edge) Iterator() influxql.Iterator {
