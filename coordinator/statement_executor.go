@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/influxdata/influxdb"
@@ -401,20 +402,30 @@ func (e *StatementExecutor) executeDropUserStatement(q *influxql.DropUserStateme
 }
 
 func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement, ctx *influxql.ExecutionContext) (models.Rows, error) {
-	ic := &query.IteratorCreator{
-		Measurement: &influxql.Measurement{
-			Name: "cpu",
-		},
+	edges, err := query.Compile(q.Statement)
+	if err != nil {
+		return nil, err
 	}
-	call := &query.FunctionCall{Name: "count"}
-	ic.Output, call.Input = query.AddEdge(ic, call)
-	call.Output, _ = query.AddEdge(call, nil)
+
+	/*
+		ic := &query.IteratorCreator{
+			Measurement: &influxql.Measurement{
+				Name: "cpu",
+			},
+		}
+		call := &query.FunctionCall{Name: "count"}
+		ic.Output, call.Input = query.AddEdge(ic, call)
+		call.Output, _ = query.AddEdge(call, nil)
+	*/
 
 	plan := query.NewPlan()
 	plan.DryRun = true
-	plan.AddTarget(call.Output)
+	for _, edge := range edges {
+		plan.AddTarget(edge)
+	}
 
 	id := 1
+	edgeIDs := make(map[query.Node]int)
 	rows := make([][]interface{}, 0, 4)
 	for {
 		node := plan.FindWork()
@@ -425,7 +436,28 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 				Values:  rows,
 			}}, nil
 		}
-		rows = append(rows, []interface{}{id, fmt.Sprintf("%T", node), node.Description(), 0.0, ""})
+
+		var dependencies string
+		if inputs := node.Inputs(); len(inputs) > 0 {
+			deps := make(map[int]struct{}, len(inputs))
+			for _, d := range inputs {
+				deps[edgeIDs[d.Input]] = struct{}{}
+			}
+
+			ids := make([]int, 0, len(deps))
+			for id := range deps {
+				ids = append(ids, id)
+			}
+			sort.Ints(ids)
+
+			stringIds := make([]string, len(ids))
+			for i, id := range ids {
+				stringIds[i] = strconv.Itoa(id)
+			}
+			dependencies = strings.Join(stringIds, ",")
+		}
+		rows = append(rows, []interface{}{id, fmt.Sprintf("%T", node), node.Description(), 0.0, dependencies})
+		edgeIDs[node] = id
 		id++
 		node.Execute(plan)
 		plan.NodeFinished(node)

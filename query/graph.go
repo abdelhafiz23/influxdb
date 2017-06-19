@@ -177,6 +177,12 @@ func (m *Merge) Description() string {
 	return fmt.Sprintf("merge %d nodes", len(m.InputNodes))
 }
 
+func (m *Merge) AddInput(n Node) *Edge {
+	edge, _ := AddEdge(n, m)
+	m.InputNodes = append(m.InputNodes, edge)
+	return edge
+}
+
 func (m *Merge) Inputs() []*Edge  { return m.InputNodes }
 func (m *Merge) Outputs() []*Edge { return []*Edge{m.Output} }
 
@@ -202,6 +208,65 @@ func (c *FunctionCall) Inputs() []*Edge  { return []*Edge{c.Input} }
 func (c *FunctionCall) Outputs() []*Edge { return []*Edge{c.Output} }
 
 func (c *FunctionCall) Execute(plan *Plan) error {
+	if plan.DryRun {
+		c.Output.SetIterator(nil)
+		return nil
+	}
+	return nil
+}
+
+type AuxiliaryFields struct {
+	Input   *Edge
+	outputs []*Edge
+	refs    []influxql.VarRef
+	Opt     influxql.IteratorOptions
+}
+
+func (c *AuxiliaryFields) Description() string {
+	return "access auxiliary fields"
+}
+
+func (c *AuxiliaryFields) Inputs() []*Edge  { return []*Edge{c.Input} }
+func (c *AuxiliaryFields) Outputs() []*Edge { return c.outputs }
+
+func (c *AuxiliaryFields) Execute(plan *Plan) error {
+	if plan.DryRun {
+		for _, output := range c.outputs {
+			output.SetIterator(nil)
+		}
+		return nil
+	}
+
+	aitr := influxql.NewAuxIterator(c.Input.Iterator(), c.Opt)
+	for i, ref := range c.refs {
+		itr := aitr.Iterator(ref.Val, ref.Type)
+		c.outputs[i].SetIterator(itr)
+	}
+	return nil
+}
+
+func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *Edge {
+	edge, _ := AddEdge(c, nil)
+	c.outputs = append(c.outputs, edge)
+	c.refs = append(c.refs, *ref)
+	return edge
+}
+
+type BinaryExpr struct {
+	LHS, RHS *Edge
+	Output   *Edge
+	Op       influxql.Token
+	Desc     string
+}
+
+func (c *BinaryExpr) Description() string {
+	return c.Desc
+}
+
+func (c *BinaryExpr) Inputs() []*Edge  { return []*Edge{c.LHS, c.RHS} }
+func (c *BinaryExpr) Outputs() []*Edge { return []*Edge{c.Output} }
+
+func (c *BinaryExpr) Execute(plan *Plan) error {
 	if plan.DryRun {
 		c.Output.SetIterator(nil)
 		return nil

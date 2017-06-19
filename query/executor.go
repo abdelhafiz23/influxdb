@@ -1,19 +1,15 @@
 package query
 
-import (
-	"container/list"
-)
-
 type Plan struct {
 	DryRun bool
 
-	ready *list.List
+	ready map[Node]struct{}
 	want  map[*Edge]struct{}
 }
 
 func NewPlan() *Plan {
 	return &Plan{
-		ready: list.New(),
+		ready: make(map[Node]struct{}),
 		want:  make(map[*Edge]struct{}),
 	}
 }
@@ -25,7 +21,7 @@ func (p *Plan) AddTarget(e *Edge) {
 
 	p.want[e] = struct{}{}
 	if inputs := e.Input.Inputs(); len(inputs) == 0 {
-		p.ready.PushBack(e.Input)
+		p.ready[e.Input] = struct{}{}
 		return
 	} else {
 		for _, input := range inputs {
@@ -35,9 +31,9 @@ func (p *Plan) AddTarget(e *Edge) {
 }
 
 func (p *Plan) FindWork() Node {
-	front := p.ready.Front()
-	if front != nil {
-		return p.ready.Remove(front).(Node)
+	for n := range p.ready {
+		delete(p.ready, n)
+		return n
 	}
 	return nil
 }
@@ -45,7 +41,7 @@ func (p *Plan) FindWork() Node {
 func (p *Plan) ScheduleWork(nodes ...Node) {
 	for _, n := range nodes {
 		if AllInputsReady(n) {
-			p.ready.PushBack(n)
+			p.ready[n] = struct{}{}
 			continue
 		}
 
@@ -64,7 +60,7 @@ func (p *Plan) NodeFinished(n Node) {
 		// The nodes are now considered ready. Check if their output edge is
 		// now ready to be executed (if they have one).
 		if e.Output != nil && AllInputsReady(e.Output) {
-			p.ready.PushBack(e.Output)
+			p.ready[e.Output] = struct{}{}
 		}
 	}
 }
