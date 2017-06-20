@@ -3,6 +3,7 @@ package query
 import (
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/influxdata/influxdb/influxql"
 )
@@ -23,18 +24,18 @@ func Compile(stmt *influxql.SelectStatement) ([]*Edge, error) {
 
 func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*Edge, error) {
 	// Determine auxiliary fields to be selected.
-	//	auxFields := make([]VarRef, 0, len(info.refs))
-	//	for ref := range info.refs {
-	//		auxFields = append(auxFields, *ref)
-	//	}
-	//	sort.Sort(VarRefs(auxFields))
+	auxFields := make([]influxql.VarRef, 0, len(info.refs))
+	for ref := range info.refs {
+		auxFields = append(auxFields, *ref)
+	}
+	sort.Sort(influxql.VarRefs(auxFields))
 
 	// Create IteratorCreator node.
 	merge := &Merge{}
 	for _, source := range stmt.Sources {
 		switch source := source.(type) {
 		case *influxql.Measurement:
-			ic := &IteratorCreator{Measurement: source}
+			ic := &IteratorCreator{Aux: auxFields, Measurement: source}
 			ic.Output = merge.AddInput(ic)
 		default:
 			panic("unimplemented")
@@ -51,7 +52,7 @@ func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*Edg
 		out = out.Chain(limit, &limit.Input, &limit.Output)
 	}
 
-	fields := &AuxiliaryFields{Input: out}
+	fields := &AuxiliaryFields{Aux: auxFields, Input: out}
 	out.Output = fields
 	outputs := make([]*Edge, 0, len(stmt.Fields))
 	for _, field := range stmt.Fields {

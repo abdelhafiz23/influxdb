@@ -1,8 +1,10 @@
 package query
 
 import (
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/influxdata/influxdb/influxql"
 )
@@ -122,6 +124,8 @@ func AllInputsReady(n Node) bool {
 }
 
 type IteratorCreator struct {
+	Expr        influxql.Expr
+	Aux         []influxql.VarRef
 	Measurement *influxql.Measurement
 	Output      *Edge
 }
@@ -130,10 +134,29 @@ func (ic *IteratorCreator) Description() string {
 	return fmt.Sprintf("create iterator for %s", ic.Measurement)
 }
 
-func (ic *IteratorCreator) Inputs() []*Edge  { return nil }
-func (ic *IteratorCreator) Outputs() []*Edge { return []*Edge{ic.Output} }
+func (ic *IteratorCreator) Inputs() []*Edge { return nil }
+func (ic *IteratorCreator) Outputs() []*Edge {
+	if ic.Output != nil {
+		return []*Edge{ic.Output}
+	}
+	return nil
+}
 
 func (ic *IteratorCreator) Execute(plan *Plan) error {
+	if plan.MetaClient == nil {
+		if !plan.DryRun {
+			return errors.New("no meta client set")
+		}
+		ic.Output.SetIterator(nil)
+		return nil
+	}
+
+	start, end := time.Unix(0, influxql.MinTime), time.Unix(0, influxql.MaxTime)
+	shards, err := plan.MetaClient.ShardsByTimeRange(influxql.Sources{ic.Measurement}, start, end)
+	if err != nil {
+		return err
+	}
+
 	// Create a merge node that all of our generated inputs will go into.
 	merge := &Merge{
 		Output: ic.Output,
@@ -141,30 +164,33 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 	merge.Output.Input = merge
 
 	// Lookup the shards.
-	shards := make([]*Edge, 0, 3)
-	for _, id := range []uint{1, 2, 3} {
+	edges := make([]*Edge, 0, len(shards))
+	for _, shardInfo := range shards {
 		sh := &ShardIteratorCreator{
+			Expr:    ic.Expr,
+			Aux:     ic.Aux,
 			Ref:     ic.Measurement.Name,
-			ShardID: id,
-			Output:  &Edge{},
+			ShardID: shardInfo.ID,
 		}
-		sh.Output.Input = sh
-		sh.Output.Output = merge
-		shards = append(shards, sh.Output)
+		sh.Output, _ = AddEdge(sh, merge)
+		edges = append(edges, sh.Output)
 	}
-	merge.InputNodes = shards
+	merge.InputNodes = edges
 
-	nodes := make([]Node, 0, len(shards))
-	for _, sh := range shards {
+	nodes := make([]Node, 0, len(edges))
+	for _, sh := range edges {
 		nodes = append(nodes, sh.Input)
 	}
+	ic.Output = nil
 	plan.ScheduleWork(nodes...)
 	return nil
 }
 
 type ShardIteratorCreator struct {
+	Expr    influxql.Expr
+	Aux     []influxql.VarRef
 	Ref     string
-	ShardID uint
+	ShardID uint64
 	Output  *Edge
 }
 
@@ -180,6 +206,20 @@ func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
 		sh.Output.SetIterator(nil)
 		return nil
 	}
+
+	shard := plan.TSDBStore.ShardGroup([]uint64{sh.ShardID})
+	opt := influxql.IteratorOptions{
+		Expr:      sh.Expr,
+		Aux:       sh.Aux,
+		StartTime: influxql.MinTime,
+		EndTime:   influxql.MaxTime,
+		Ascending: true,
+	}
+	itr, err := shard.CreateIterator(sh.Ref, opt)
+	if err != nil {
+		return err
+	}
+	sh.Output.SetIterator(itr)
 	return nil
 }
 
@@ -206,6 +246,21 @@ func (m *Merge) Execute(plan *Plan) error {
 		m.Output.SetIterator(nil)
 		return nil
 	}
+
+	if len(m.InputNodes) == 0 {
+		m.Output.SetIterator(nil)
+		return nil
+	} else if len(m.InputNodes) == 1 {
+		m.Output.SetIterator(m.InputNodes[0].Iterator())
+		return nil
+	}
+
+	inputs := make([]influxql.Iterator, len(m.InputNodes))
+	for i, input := range m.InputNodes {
+		inputs[i] = input.Iterator()
+	}
+	itr := influxql.NewSortedMergeIterator(inputs, influxql.IteratorOptions{Ascending: true})
+	m.Output.SetIterator(itr)
 	return nil
 }
 
@@ -231,10 +286,10 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 }
 
 type AuxiliaryFields struct {
+	Aux     []influxql.VarRef
 	Input   *Edge
 	outputs []*Edge
 	refs    []influxql.VarRef
-	Opt     influxql.IteratorOptions
 }
 
 func (c *AuxiliaryFields) Description() string {
@@ -252,11 +307,13 @@ func (c *AuxiliaryFields) Execute(plan *Plan) error {
 		return nil
 	}
 
-	aitr := influxql.NewAuxIterator(c.Input.Iterator(), c.Opt)
+	opt := influxql.IteratorOptions{Aux: c.Aux}
+	aitr := influxql.NewAuxIterator(c.Input.Iterator(), opt)
 	for i, ref := range c.refs {
 		itr := aitr.Iterator(ref.Val, ref.Type)
 		c.outputs[i].SetIterator(itr)
 	}
+	aitr.Background()
 	return nil
 }
 

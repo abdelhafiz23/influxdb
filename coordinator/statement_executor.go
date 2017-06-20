@@ -409,6 +409,7 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 
 	plan := query.NewPlan()
 	plan.DryRun = true
+	plan.MetaClient = e.MetaClient
 	for _, edge := range edges {
 		plan.AddTarget(edge)
 	}
@@ -486,10 +487,38 @@ func (e *StatementExecutor) executeSetPasswordUserStatement(q *influxql.SetPassw
 }
 
 func (e *StatementExecutor) executeSelectStatement(stmt *influxql.SelectStatement, ctx *influxql.ExecutionContext) error {
-	itrs, stmt, err := e.createIterators(stmt, ctx)
+	edges, err := query.Compile(stmt)
 	if err != nil {
 		return err
 	}
+
+	plan := query.NewPlan()
+	plan.MetaClient = e.MetaClient
+	plan.TSDBStore = e.TSDBStore
+	for _, edge := range edges {
+		plan.AddTarget(edge)
+	}
+
+	for {
+		node := plan.FindWork()
+		if node == nil {
+			break
+		}
+		if err := node.Execute(plan); err != nil {
+			return err
+		}
+		plan.NodeFinished(node)
+	}
+
+	itrs := make([]influxql.Iterator, len(edges))
+	for i, edge := range edges {
+		itrs[i] = edge.Iterator()
+	}
+
+	//	itrs, stmt, err := e.createIterators(stmt, ctx)
+	//	if err != nil {
+	//		return err
+	//	}
 
 	// Generate a row emitter from the iterator set.
 	em := influxql.NewEmitter(itrs, stmt.TimeAscending(), ctx.ChunkSize)
@@ -1220,6 +1249,8 @@ type TSDBStore interface {
 
 	MeasurementNames(database string, cond influxql.Expr) ([][]byte, error)
 	TagValues(database string, cond influxql.Expr) ([]tsdb.TagValues, error)
+
+	ShardGroup(ids []uint64) tsdb.ShardGroup
 }
 
 var _ TSDBStore = LocalTSDBStore{}

@@ -1,7 +1,23 @@
 package query
 
+import (
+	"time"
+
+	"github.com/influxdata/influxdb/influxql"
+	"github.com/influxdata/influxdb/services/meta"
+	"github.com/influxdata/influxdb/tsdb"
+)
+
 type Plan struct {
 	DryRun bool
+
+	MetaClient interface {
+		ShardsByTimeRange(sources influxql.Sources, tmin, tmax time.Time) (a []meta.ShardInfo, err error)
+	}
+
+	TSDBStore interface {
+		ShardGroup(ids []uint64) tsdb.ShardGroup
+	}
 
 	ready map[Node]struct{}
 	want  map[*Edge]struct{}
