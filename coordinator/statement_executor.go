@@ -407,17 +407,6 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 		return nil, err
 	}
 
-	/*
-		ic := &query.IteratorCreator{
-			Measurement: &influxql.Measurement{
-				Name: "cpu",
-			},
-		}
-		call := &query.FunctionCall{Name: "count"}
-		ic.Output, call.Input = query.AddEdge(ic, call)
-		call.Output, _ = query.AddEdge(call, nil)
-	*/
-
 	plan := query.NewPlan()
 	plan.DryRun = true
 	for _, edge := range edges {

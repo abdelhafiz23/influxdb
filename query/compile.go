@@ -40,9 +40,19 @@ func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*Edg
 			panic("unimplemented")
 		}
 	}
+	merge.Output = NewEdge(merge)
 
-	fields := &AuxiliaryFields{}
-	merge.Output, fields.Input = AddEdge(merge, fields)
+	out := merge.Output
+	if stmt.Limit > 0 || stmt.Offset > 0 {
+		limit := &Limit{
+			Limit:  stmt.Limit,
+			Offset: stmt.Offset,
+		}
+		out = out.Chain(limit, &limit.Input, &limit.Output)
+	}
+
+	fields := &AuxiliaryFields{Input: out}
+	out.Output = fields
 	outputs := make([]*Edge, 0, len(stmt.Fields))
 	for _, field := range stmt.Fields {
 		outputs = append(outputs, buildAuxIterator(field.Expr, fields))

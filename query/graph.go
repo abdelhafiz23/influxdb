@@ -28,15 +28,30 @@ type Edge struct {
 	mu    sync.RWMutex
 }
 
+// NewEdge creates a new edge with the input node set to the argument and the
+// output node set to nothing.
+func NewEdge(in Node) *Edge {
+	return &Edge{Input: in}
+}
+
 // AddEdge creates a new edge with the input and output node. It returns the
 // same edge twice so the same edge can be assigned to the output edge of the
 // input node and the input edge of the output node by the caller.
 func AddEdge(in, out Node) (*Edge, *Edge) {
-	edge := &Edge{
-		Input:  in,
-		Output: out,
-	}
+	edge := NewEdge(in)
+	edge.Output = out
 	return edge, edge
+}
+
+// Chain takes a node along with its input and output node addresses. It
+// assigns the edge to the node's input (and sets the edge's output to the
+// node). It then creates a new edge that has the node as the input and returns
+// the new edge.
+func (e *Edge) Chain(node Node, in, out **Edge) *Edge {
+	e.Output = node
+	*in = e
+	*out = NewEdge(node)
+	return *out
 }
 
 // Iterator returns the Iterator created for this Node by the Input edge.
@@ -267,6 +282,36 @@ func (c *BinaryExpr) Inputs() []*Edge  { return []*Edge{c.LHS, c.RHS} }
 func (c *BinaryExpr) Outputs() []*Edge { return []*Edge{c.Output} }
 
 func (c *BinaryExpr) Execute(plan *Plan) error {
+	if plan.DryRun {
+		c.Output.SetIterator(nil)
+		return nil
+	}
+	return nil
+}
+
+type Limit struct {
+	Input  *Edge
+	Output *Edge
+
+	Limit  int
+	Offset int
+}
+
+func (c *Limit) Description() string {
+	if c.Limit > 0 && c.Offset > 0 {
+		return fmt.Sprintf("limit %d/offset %d", c.Limit, c.Offset)
+	} else if c.Limit > 0 {
+		return fmt.Sprintf("limit %d", c.Limit)
+	} else if c.Offset > 0 {
+		return fmt.Sprintf("offset %d", c.Offset)
+	}
+	return "limit 0/offset 0"
+}
+
+func (c *Limit) Inputs() []*Edge  { return []*Edge{c.Input} }
+func (c *Limit) Outputs() []*Edge { return []*Edge{c.Output} }
+
+func (c *Limit) Execute(plan *Plan) error {
 	if plan.DryRun {
 		c.Output.SetIterator(nil)
 		return nil
