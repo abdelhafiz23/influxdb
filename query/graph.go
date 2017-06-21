@@ -86,6 +86,23 @@ func (e *OutputEdge) Ready() (ready bool) {
 	return ready
 }
 
+// Insert splits the current edge and inserts a Node into the middle.
+// It then returns the newly created OutputEdge that points to the inserted
+// Node and the newly created InputEdge that the Node should use to send its
+// results.
+func (e *OutputEdge) Insert(n Node) (*OutputEdge, *InputEdge) {
+	// Create a new OutputEdge. The input should be the current InputEdge for
+	// this node.
+	out := &OutputEdge{Node: n, Input: e.Input}
+	// Reset the Input so it points to the newly created output as its input.
+	e.Input.Output = out
+	// Redirect this OutputEdge's input to a new input edge.
+	e.Input = &InputEdge{Node: n, Output: e}
+	// Return the newly created edges so they can be stored with the newly
+	// inserted Node.
+	return out, e.Input
+}
+
 // Append sets the Node for the current output edge and then creates a new Edge
 // that points to nothing.
 func (e *OutputEdge) Append(out Node) (*InputEdge, *OutputEdge) {
@@ -107,89 +124,6 @@ func AddEdge(in, out Node) (*InputEdge, *OutputEdge) {
 	return input, output
 }
 
-/*
-// Edge connects two nodes in a directed graph. The Edge contains an input
-// Node, which is where it receives its input from. The Edge then holds onto
-// the iterator created by the Node so it can be sent to the output Node.
-//
-// Every Edge is in a non-ready state or a ready state. When it is in a
-// non-ready state, it is still waiting for its input node to send the edge its
-// iterator. When it is in a ready state, the iterator is ready to be consumed
-// by the output node.
-type Edge struct {
-	// Input is the Node that creates the Iterator for this Edge.
-	Input Node
-
-	// Output is the Node that will receive the Iterator created for this Edge.
-	// An edge does not need to have an output edge.
-	Output Node
-
-	itr   influxql.Iterator
-	ready bool
-	mu    sync.RWMutex
-}
-
-// NewEdge creates a new edge with the input node set to the argument and the
-// output node set to nothing.
-func NewEdge(in Node) *Edge {
-	return &Edge{Input: in}
-}
-
-// AddEdge creates a new edge with the input and output node. It returns the
-// same edge twice so the same edge can be assigned to the output edge of the
-// input node and the input edge of the output node by the caller.
-func AddEdge(in, out Node) (*Edge, *Edge) {
-	edge := NewEdge(in)
-	edge.Output = out
-	return edge, edge
-}
-
-// Chain takes a node along with its input and output node addresses. It
-// assigns the edge to the node's input (and sets the edge's output to the
-// node). It then creates a new edge that has the node as the input and returns
-// the new edge.
-func (e *Edge) Chain(node Node, in, out **Edge) *Edge {
-	e.Output = node
-	*in = e
-	*out = NewEdge(node)
-	return *out
-}
-
-// Iterator returns the Iterator created for this Node by the Input edge.
-// If the Node returns false from Ready(), this function will panic.
-func (e *Edge) Iterator() influxql.Iterator {
-	e.mu.RLock()
-	if !e.ready {
-		e.mu.RUnlock()
-		panic("attempted to retrieve an iterator from an edge before it was ready")
-	}
-	itr := e.itr
-	e.mu.RUnlock()
-	return itr
-}
-
-// SetIterator marks this Edge as ready and sets the Iterator as the returned
-// iterator. If the Edge has already been set, this panics. This should only be
-// called from the Input Node.
-func (e *Edge) SetIterator(itr influxql.Iterator) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.ready {
-		panic("unable to call SetIterator on the same node twice")
-	}
-	e.itr = itr
-	e.ready = true
-}
-
-func (e *Edge) Ready() (ready bool) {
-	e.mu.RLock()
-	ready = e.ready
-	e.mu.RUnlock()
-	return ready
-}
-*/
-
 type Node interface {
 	// Description returns a brief description about what this node does.  This
 	// should include details that describe what the node will do based on the
@@ -206,6 +140,11 @@ type Node interface {
 	// Execute executes the Node and transmits the created Iterators to the
 	// output edges.
 	Execute(plan *Plan) error
+}
+
+type OptimizableNode interface {
+	Node
+	Optimize()
 }
 
 // AllInputsReady determines if all of the input edges for a node are ready.
@@ -276,6 +215,7 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 		sh.Output = merge.AddInput(sh)
 	}
 	ic.Output = nil
+	merge.Optimize()
 	plan.ScheduleWork(merge)
 	return nil
 }
@@ -360,6 +300,37 @@ func (m *Merge) Execute(plan *Plan) error {
 	itr := influxql.NewSortedMergeIterator(inputs, influxql.IteratorOptions{Ascending: true})
 	m.Output.SetIterator(itr)
 	return nil
+}
+
+func (m *Merge) Optimize() {
+	// Nothing to optimize if we are not pointed at anything.
+	if m.Output.Output.Node == nil {
+		return
+	}
+
+	switch node := m.Output.Output.Node.(type) {
+	case *FunctionCall:
+		// If our output node is a function, check if it is one of the ones we can
+		// do as a partial aggregate.
+		switch node.Name {
+		case "min", "max", "sum", "first", "last", "mean", "count":
+			// Pass through.
+		default:
+			return
+		}
+
+		// Create a new function call and insert it at the end of every
+		// input to the merge node.
+		for _, input := range m.InputNodes {
+			call := &FunctionCall{Name: node.Name}
+			call.Input, call.Output = input.Insert(call)
+		}
+
+		// If the function call was count(), modify it so it is now sum().
+		if node.Name == "count" {
+			node.Name = "sum"
+		}
+	}
 }
 
 var _ Node = &FunctionCall{}

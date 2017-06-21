@@ -19,7 +19,7 @@ func Compile(stmt *influxql.SelectStatement) ([]*OutputEdge, error) {
 	if len(info.calls) == 0 && len(info.refs) > 0 {
 		return buildAuxIterators(stmt, info)
 	}
-	return nil, errors.New("unimplemented")
+	return buildFieldIterators(stmt)
 }
 
 func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*OutputEdge, error) {
@@ -86,6 +86,57 @@ func buildAuxIterator(expr influxql.Expr, aitr *AuxiliaryFields) *OutputEdge {
 		return buildAuxIterator(expr.Expr, aitr)
 	default:
 		panic("unimplemented")
+	}
+}
+
+func buildFieldIterators(stmt *influxql.SelectStatement) ([]*OutputEdge, error) {
+	edges := make([]*OutputEdge, len(stmt.Fields))
+	for i, field := range stmt.Fields {
+		out, err := buildExprIterator(field.Expr, stmt.Sources)
+		if err != nil {
+			return nil, err
+		}
+		edges[i] = out
+	}
+	return edges, nil
+}
+
+func buildExprIterator(expr influxql.Expr, sources influxql.Sources) (*OutputEdge, error) {
+	switch expr := expr.(type) {
+	case *influxql.VarRef:
+		merge := &Merge{}
+		for _, source := range sources {
+			switch source := source.(type) {
+			case *influxql.Measurement:
+				ic := &IteratorCreator{Expr: expr, Measurement: source}
+				ic.Output = merge.AddInput(ic)
+			default:
+				return nil, fmt.Errorf("unimplemented source type: %T", source)
+			}
+		}
+
+		var out *OutputEdge
+		merge.Output, out = NewEdge(merge)
+		return out, nil
+	case *influxql.Call:
+		switch expr.Name {
+		case "count":
+			fallthrough
+		case "min", "max", "sum", "first", "last", "mean":
+			arg0 := expr.Args[0].(*influxql.VarRef)
+			out, err := buildExprIterator(arg0, sources)
+			if err != nil {
+				return nil, err
+			}
+
+			call := &FunctionCall{Name: expr.Name, Input: out}
+			call.Output, out = out.Append(call)
+			return out, nil
+		default:
+			return nil, errors.New("unimplemented")
+		}
+	default:
+		return nil, fmt.Errorf("invalid expression type: %T", expr)
 	}
 }
 

@@ -34,8 +34,12 @@ func (p *Plan) AddTarget(e *OutputEdge) {
 	if _, ok := p.want[e]; ok {
 		return
 	}
-
 	p.want[e] = struct{}{}
+
+	if node, ok := e.Input.Node.(OptimizableNode); ok {
+		node.Optimize()
+	}
+
 	if inputs := e.Input.Node.Inputs(); len(inputs) == 0 {
 		p.ready[e.Input.Node] = struct{}{}
 		return
