@@ -20,24 +20,24 @@ type Plan struct {
 	}
 
 	ready map[Node]struct{}
-	want  map[*Edge]struct{}
+	want  map[*OutputEdge]struct{}
 }
 
 func NewPlan() *Plan {
 	return &Plan{
 		ready: make(map[Node]struct{}),
-		want:  make(map[*Edge]struct{}),
+		want:  make(map[*OutputEdge]struct{}),
 	}
 }
 
-func (p *Plan) AddTarget(e *Edge) {
+func (p *Plan) AddTarget(e *OutputEdge) {
 	if _, ok := p.want[e]; ok {
 		return
 	}
 
 	p.want[e] = struct{}{}
-	if inputs := e.Input.Inputs(); len(inputs) == 0 {
-		p.ready[e.Input] = struct{}{}
+	if inputs := e.Input.Node.Inputs(); len(inputs) == 0 {
+		p.ready[e.Input.Node] = struct{}{}
 		return
 	} else {
 		for _, input := range inputs {
@@ -75,8 +75,8 @@ func (p *Plan) NodeFinished(n Node) {
 	for _, e := range n.Outputs() {
 		// The nodes are now considered ready. Check if their output edge is
 		// now ready to be executed (if they have one).
-		if e.Output != nil && AllInputsReady(e.Output) {
-			p.ready[e.Output] = struct{}{}
+		if e.Output.Node != nil && AllInputsReady(e.Output.Node) {
+			p.ready[e.Output.Node] = struct{}{}
 		}
 	}
 }

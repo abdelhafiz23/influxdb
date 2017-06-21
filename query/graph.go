@@ -9,6 +9,105 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 )
 
+// InputEdge is the input end of an edge.
+type InputEdge struct {
+	// Node is the node that creates an Iterator and sends it to this edge.
+	// This should always be set to a value.
+	Node Node
+
+	// Output is the output end of the edge. This should always be set.
+	Output *OutputEdge
+
+	itr   influxql.Iterator
+	ready bool
+	mu    sync.RWMutex
+}
+
+// SetIterator marks this Edge as ready and sets the Iterator as the returned
+// iterator. If the Edge has already been set, this panics. The result can be
+// retrieved from the output edge.
+func (e *InputEdge) SetIterator(itr influxql.Iterator) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.ready {
+		panic("unable to call SetIterator on the same node twice")
+	}
+	e.itr = itr
+	e.ready = true
+}
+
+// Insert splits the current edge and inserts a Node into the middle.
+// It then returns the newly created OutputEdge that points to the inserted
+// Node and the newly created InputEdge that the Node should use to send its
+// results.
+func (e *InputEdge) Insert(n Node) (*OutputEdge, *InputEdge) {
+	// Create a new InputEdge. The output should be the old location this
+	// InputEdge pointed to.
+	in := &InputEdge{Node: n, Output: e.Output}
+	// Reset the OutputEdge so it points to the newly created input as its input.
+	e.Output.Input = in
+	// Redirect this InputEdge's output to a new output edge.
+	e.Output = &OutputEdge{Node: n, Input: e}
+	// Return the newly created edges so they can be stored with the newly
+	// inserted Node.
+	return e.Output, in
+}
+
+// OutputEdge is the output end of an edge.
+type OutputEdge struct {
+	// Node is the node that will read the Iterator from this edge.
+	// This may be nil if there is no Node that will read this edge.
+	Node Node
+
+	// Input is the input end of the edge. This should always be set.
+	Input *InputEdge
+}
+
+// Iterator returns the Iterator created for this Node by the InputEdge.
+// If the InputEdge is not ready, this function will panic.
+func (e *OutputEdge) Iterator() influxql.Iterator {
+	e.Input.mu.RLock()
+	if !e.Input.ready {
+		e.Input.mu.RUnlock()
+		panic("attempted to retrieve an iterator from an edge before it was ready")
+	}
+	itr := e.Input.itr
+	e.Input.mu.RUnlock()
+	return itr
+}
+
+// Ready returns whether this OutputEdge is ready to be read from. This edge
+// will be ready after the attached InputEdge has called SetIterator().
+func (e *OutputEdge) Ready() (ready bool) {
+	e.Input.mu.RLock()
+	ready = e.Input.ready
+	e.Input.mu.RUnlock()
+	return ready
+}
+
+// Append sets the Node for the current output edge and then creates a new Edge
+// that points to nothing.
+func (e *OutputEdge) Append(out Node) (*InputEdge, *OutputEdge) {
+	e.Node = out
+	return NewEdge(out)
+}
+
+// NewEdge creates a new edge with the input node set to the argument and the
+// output node set to nothing.
+func NewEdge(in Node) (*InputEdge, *OutputEdge) {
+	return AddEdge(in, nil)
+}
+
+// AddEdge creates a new edge between two nodes.
+func AddEdge(in, out Node) (*InputEdge, *OutputEdge) {
+	input := &InputEdge{Node: in}
+	output := &OutputEdge{Node: out}
+	input.Output, output.Input = output, input
+	return input, output
+}
+
+/*
 // Edge connects two nodes in a directed graph. The Edge contains an input
 // Node, which is where it receives its input from. The Edge then holds onto
 // the iterator created by the Node so it can be sent to the output Node.
@@ -89,6 +188,7 @@ func (e *Edge) Ready() (ready bool) {
 	e.mu.RUnlock()
 	return ready
 }
+*/
 
 type Node interface {
 	// Description returns a brief description about what this node does.  This
@@ -98,10 +198,10 @@ type Node interface {
 
 	// Inputs returns the Edges that produce Iterators that will be consumed by
 	// this Node.
-	Inputs() []*Edge
+	Inputs() []*OutputEdge
 
 	// Outputs returns the Edges that will receive an Iterator from this Node.
-	Outputs() []*Edge
+	Outputs() []*InputEdge
 
 	// Execute executes the Node and transmits the created Iterators to the
 	// output edges.
@@ -123,21 +223,23 @@ func AllInputsReady(n Node) bool {
 	return true
 }
 
+var _ Node = &IteratorCreator{}
+
 type IteratorCreator struct {
 	Expr        influxql.Expr
 	Aux         []influxql.VarRef
 	Measurement *influxql.Measurement
-	Output      *Edge
+	Output      *InputEdge
 }
 
 func (ic *IteratorCreator) Description() string {
 	return fmt.Sprintf("create iterator for %s", ic.Measurement)
 }
 
-func (ic *IteratorCreator) Inputs() []*Edge { return nil }
-func (ic *IteratorCreator) Outputs() []*Edge {
+func (ic *IteratorCreator) Inputs() []*OutputEdge { return nil }
+func (ic *IteratorCreator) Outputs() []*InputEdge {
 	if ic.Output != nil {
-		return []*Edge{ic.Output}
+		return []*InputEdge{ic.Output}
 	}
 	return nil
 }
@@ -147,8 +249,6 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 		if !plan.DryRun {
 			return errors.New("no meta client set")
 		}
-		ic.Output.SetIterator(nil)
-		return nil
 	}
 
 	start, end := time.Unix(0, influxql.MinTime), time.Unix(0, influxql.MaxTime)
@@ -157,14 +257,15 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 		return err
 	}
 
-	// Create a merge node that all of our generated inputs will go into.
+	// Create a merge node that all of our generated inputs will go into. Set
+	// the output of the Merge node to where the output of this node was
+	// supposed to go.
 	merge := &Merge{
 		Output: ic.Output,
 	}
-	merge.Output.Input = merge
+	merge.Output.Node = merge
 
 	// Lookup the shards.
-	edges := make([]*Edge, 0, len(shards))
 	for _, shardInfo := range shards {
 		sh := &ShardIteratorCreator{
 			Expr:    ic.Expr,
@@ -172,34 +273,29 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 			Ref:     ic.Measurement.Name,
 			ShardID: shardInfo.ID,
 		}
-		sh.Output, _ = AddEdge(sh, merge)
-		edges = append(edges, sh.Output)
-	}
-	merge.InputNodes = edges
-
-	nodes := make([]Node, 0, len(edges))
-	for _, sh := range edges {
-		nodes = append(nodes, sh.Input)
+		sh.Output = merge.AddInput(sh)
 	}
 	ic.Output = nil
-	plan.ScheduleWork(nodes...)
+	plan.ScheduleWork(merge)
 	return nil
 }
+
+var _ Node = &ShardIteratorCreator{}
 
 type ShardIteratorCreator struct {
 	Expr    influxql.Expr
 	Aux     []influxql.VarRef
 	Ref     string
 	ShardID uint64
-	Output  *Edge
+	Output  *InputEdge
 }
 
 func (sh *ShardIteratorCreator) Description() string {
 	return fmt.Sprintf("create iterator for %s [shard %d]", sh.Ref, sh.ShardID)
 }
 
-func (sh *ShardIteratorCreator) Inputs() []*Edge  { return nil }
-func (sh *ShardIteratorCreator) Outputs() []*Edge { return []*Edge{sh.Output} }
+func (sh *ShardIteratorCreator) Inputs() []*OutputEdge { return nil }
+func (sh *ShardIteratorCreator) Outputs() []*InputEdge { return []*InputEdge{sh.Output} }
 
 func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -223,23 +319,25 @@ func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
 	return nil
 }
 
+var _ Node = &Merge{}
+
 type Merge struct {
-	InputNodes []*Edge
-	Output     *Edge
+	InputNodes []*OutputEdge
+	Output     *InputEdge
 }
 
 func (m *Merge) Description() string {
 	return fmt.Sprintf("merge %d nodes", len(m.InputNodes))
 }
 
-func (m *Merge) AddInput(n Node) *Edge {
-	edge, _ := AddEdge(n, m)
-	m.InputNodes = append(m.InputNodes, edge)
-	return edge
+func (m *Merge) AddInput(n Node) *InputEdge {
+	in, out := AddEdge(n, m)
+	m.InputNodes = append(m.InputNodes, out)
+	return in
 }
 
-func (m *Merge) Inputs() []*Edge  { return m.InputNodes }
-func (m *Merge) Outputs() []*Edge { return []*Edge{m.Output} }
+func (m *Merge) Inputs() []*OutputEdge { return m.InputNodes }
+func (m *Merge) Outputs() []*InputEdge { return []*InputEdge{m.Output} }
 
 func (m *Merge) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -264,18 +362,20 @@ func (m *Merge) Execute(plan *Plan) error {
 	return nil
 }
 
+var _ Node = &FunctionCall{}
+
 type FunctionCall struct {
 	Name   string
-	Input  *Edge
-	Output *Edge
+	Input  *OutputEdge
+	Output *InputEdge
 }
 
 func (c *FunctionCall) Description() string {
 	return fmt.Sprintf("%s()", c.Name)
 }
 
-func (c *FunctionCall) Inputs() []*Edge  { return []*Edge{c.Input} }
-func (c *FunctionCall) Outputs() []*Edge { return []*Edge{c.Output} }
+func (c *FunctionCall) Inputs() []*OutputEdge { return []*OutputEdge{c.Input} }
+func (c *FunctionCall) Outputs() []*InputEdge { return []*InputEdge{c.Output} }
 
 func (c *FunctionCall) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -287,8 +387,8 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 
 type AuxiliaryFields struct {
 	Aux     []influxql.VarRef
-	Input   *Edge
-	outputs []*Edge
+	Input   *OutputEdge
+	outputs []*InputEdge
 	refs    []influxql.VarRef
 }
 
@@ -296,8 +396,8 @@ func (c *AuxiliaryFields) Description() string {
 	return "access auxiliary fields"
 }
 
-func (c *AuxiliaryFields) Inputs() []*Edge  { return []*Edge{c.Input} }
-func (c *AuxiliaryFields) Outputs() []*Edge { return c.outputs }
+func (c *AuxiliaryFields) Inputs() []*OutputEdge { return []*OutputEdge{c.Input} }
+func (c *AuxiliaryFields) Outputs() []*InputEdge { return c.outputs }
 
 func (c *AuxiliaryFields) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -317,16 +417,18 @@ func (c *AuxiliaryFields) Execute(plan *Plan) error {
 	return nil
 }
 
-func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *Edge {
-	edge, _ := AddEdge(c, nil)
-	c.outputs = append(c.outputs, edge)
+func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *OutputEdge {
+	in, out := NewEdge(c)
+	c.outputs = append(c.outputs, in)
 	c.refs = append(c.refs, *ref)
-	return edge
+	return out
 }
 
+var _ Node = &BinaryExpr{}
+
 type BinaryExpr struct {
-	LHS, RHS *Edge
-	Output   *Edge
+	LHS, RHS *OutputEdge
+	Output   *InputEdge
 	Op       influxql.Token
 	Desc     string
 }
@@ -335,8 +437,8 @@ func (c *BinaryExpr) Description() string {
 	return c.Desc
 }
 
-func (c *BinaryExpr) Inputs() []*Edge  { return []*Edge{c.LHS, c.RHS} }
-func (c *BinaryExpr) Outputs() []*Edge { return []*Edge{c.Output} }
+func (c *BinaryExpr) Inputs() []*OutputEdge { return []*OutputEdge{c.LHS, c.RHS} }
+func (c *BinaryExpr) Outputs() []*InputEdge { return []*InputEdge{c.Output} }
 
 func (c *BinaryExpr) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -346,9 +448,11 @@ func (c *BinaryExpr) Execute(plan *Plan) error {
 	return nil
 }
 
+var _ Node = &Limit{}
+
 type Limit struct {
-	Input  *Edge
-	Output *Edge
+	Input  *OutputEdge
+	Output *InputEdge
 
 	Limit  int
 	Offset int
@@ -365,8 +469,8 @@ func (c *Limit) Description() string {
 	return "limit 0/offset 0"
 }
 
-func (c *Limit) Inputs() []*Edge  { return []*Edge{c.Input} }
-func (c *Limit) Outputs() []*Edge { return []*Edge{c.Output} }
+func (c *Limit) Inputs() []*OutputEdge { return []*OutputEdge{c.Input} }
+func (c *Limit) Outputs() []*InputEdge { return []*InputEdge{c.Output} }
 
 func (c *Limit) Execute(plan *Plan) error {
 	if plan.DryRun {

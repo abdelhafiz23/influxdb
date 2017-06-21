@@ -8,7 +8,7 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 )
 
-func Compile(stmt *influxql.SelectStatement) ([]*Edge, error) {
+func Compile(stmt *influxql.SelectStatement) ([]*OutputEdge, error) {
 	// Retrieve refs for each call and var ref.
 	info := newSelectInfo(stmt)
 	if len(info.calls) > 1 && len(info.refs) > 0 {
@@ -22,7 +22,7 @@ func Compile(stmt *influxql.SelectStatement) ([]*Edge, error) {
 	return nil, errors.New("unimplemented")
 }
 
-func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*Edge, error) {
+func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*OutputEdge, error) {
 	// Determine auxiliary fields to be selected.
 	auxFields := make([]influxql.VarRef, 0, len(info.refs))
 	for ref := range info.refs {
@@ -41,27 +41,29 @@ func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*Edg
 			panic("unimplemented")
 		}
 	}
-	merge.Output = NewEdge(merge)
 
-	out := merge.Output
+	var out *OutputEdge
+	merge.Output, out = NewEdge(merge)
+
 	if stmt.Limit > 0 || stmt.Offset > 0 {
 		limit := &Limit{
 			Limit:  stmt.Limit,
 			Offset: stmt.Offset,
+			Input:  out,
 		}
-		out = out.Chain(limit, &limit.Input, &limit.Output)
+		limit.Output, out = limit.Input.Append(limit)
 	}
 
 	fields := &AuxiliaryFields{Aux: auxFields, Input: out}
-	out.Output = fields
-	outputs := make([]*Edge, 0, len(stmt.Fields))
+	out.Node = fields
+	outputs := make([]*OutputEdge, 0, len(stmt.Fields))
 	for _, field := range stmt.Fields {
 		outputs = append(outputs, buildAuxIterator(field.Expr, fields))
 	}
 	return outputs, nil
 }
 
-func buildAuxIterator(expr influxql.Expr, aitr *AuxiliaryFields) *Edge {
+func buildAuxIterator(expr influxql.Expr, aitr *AuxiliaryFields) *OutputEdge {
 	switch expr := expr.(type) {
 	case *influxql.VarRef:
 		return aitr.Iterator(expr)
@@ -75,9 +77,11 @@ func buildAuxIterator(expr influxql.Expr, aitr *AuxiliaryFields) *Edge {
 			Op:   expr.Op,
 			Desc: fmt.Sprintf("%s %s %s", expr.LHS, expr.Op, expr.RHS),
 		}
-		lhs.Output, rhs.Output = bexpr, bexpr
-		bexpr.Output, _ = AddEdge(bexpr, nil)
-		return bexpr.Output
+		lhs.Node, rhs.Node = bexpr, bexpr
+
+		var out *OutputEdge
+		bexpr.Output, out = NewEdge(bexpr)
+		return out
 	case *influxql.ParenExpr:
 		return buildAuxIterator(expr.Expr, aitr)
 	default:

@@ -431,7 +431,7 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 		if inputs := node.Inputs(); len(inputs) > 0 {
 			deps := make(map[int]struct{}, len(inputs))
 			for _, d := range inputs {
-				deps[edgeIDs[d.Input]] = struct{}{}
+				deps[edgeIDs[d.Input.Node]] = struct{}{}
 			}
 
 			ids := make([]int, 0, len(deps))
