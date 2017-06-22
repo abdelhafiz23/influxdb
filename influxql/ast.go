@@ -4248,6 +4248,9 @@ func Walk(v Visitor, node Node) {
 		Walk(v, n.Condition)
 		Walk(v, n.SortFields)
 
+	case *ExplainStatement:
+		Walk(v, n.Statement)
+
 	case *ShowSeriesStatement:
 		Walk(v, n.Sources)
 		Walk(v, n.Condition)
