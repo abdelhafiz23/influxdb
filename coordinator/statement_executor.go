@@ -487,38 +487,10 @@ func (e *StatementExecutor) executeSetPasswordUserStatement(q *influxql.SetPassw
 }
 
 func (e *StatementExecutor) executeSelectStatement(stmt *influxql.SelectStatement, ctx *influxql.ExecutionContext) error {
-	edges, err := query.Compile(stmt)
+	itrs, stmt, err := e.createIterators(stmt, ctx)
 	if err != nil {
 		return err
 	}
-
-	plan := query.NewPlan()
-	plan.MetaClient = e.MetaClient
-	plan.TSDBStore = e.TSDBStore
-	for _, edge := range edges {
-		plan.AddTarget(edge)
-	}
-
-	for {
-		node := plan.FindWork()
-		if node == nil {
-			break
-		}
-		if err := node.Execute(plan); err != nil {
-			return err
-		}
-		plan.NodeFinished(node)
-	}
-
-	itrs := make([]influxql.Iterator, len(edges))
-	for i, edge := range edges {
-		itrs[i] = edge.Iterator()
-	}
-
-	//	itrs, stmt, err := e.createIterators(stmt, ctx)
-	//	if err != nil {
-	//		return err
-	//	}
 
 	// Generate a row emitter from the iterator set.
 	em := influxql.NewEmitter(itrs, stmt.TimeAscending(), ctx.ChunkSize)
@@ -682,10 +654,32 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		}
 	}
 
-	// Create a set of iterators from a selection.
-	itrs, err := influxql.Select(stmt, ic, &opt)
+	edges, err := query.Compile(stmt)
 	if err != nil {
 		return nil, stmt, err
+	}
+
+	plan := query.NewPlan()
+	plan.MetaClient = e.MetaClient
+	plan.TSDBStore = e.TSDBStore
+	for _, edge := range edges {
+		plan.AddTarget(edge)
+	}
+
+	for {
+		node := plan.FindWork()
+		if node == nil {
+			break
+		}
+		if err := node.Execute(plan); err != nil {
+			return nil, stmt, err
+		}
+		plan.NodeFinished(node)
+	}
+
+	itrs := make([]influxql.Iterator, len(edges))
+	for i, edge := range edges {
+		itrs[i] = edge.Iterator()
 	}
 
 	if e.MaxSelectPointN > 0 {
