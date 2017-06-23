@@ -336,3 +336,34 @@ instead of the storage engine doing this optimization unsolicited. This
 kind of separation of concerns will allow much less code to exist in the
 storage engine so query work can be confined mostly to the `query`
 package.
+
+## Implementation Steps
+
+* Construct the Edge structs and some sample Nodes. Ensure this kind of
+  structure actually works.
+  * The original structure only had an Edge struct and did not separate
+    these into two. This was found to make it difficult to insert new
+    nodes between other edges in practice which is why the edges are now
+    split into two structs. A side benefit of this is it's harder to
+    confuse if you are reading or writing since everything is named
+    "input" and "output" as you read from output edges within nodes but
+    the output edge is called that because it's the end of the edge even
+    if the node reads from it.
+* Add descriptions to each of the nodes.
+* Modify the AST to include an explain command.
+* Modify the coordinator to build a query plan and execute it in "dry
+  run" mode. Have it print out the results in a format. The format
+  didn't really matter and is completely negotiable.
+* Modify the coordinator to use the same query plan to build the query.
+* Support some basic auxiliary iterators in explain plan.
+* Support a basic call iterator such as count() in explain plan.
+* Implement the partial aggregate optimization in the explain plan by
+  modifying the AST.
+* Actually implement all of the above.
+* Find a way to send a plan node to the storage engine for execution.
+* Experiment with sub plans so a plan can be optimized and a portion of
+  the plan can be sent to remote node (the storage engine) to be
+  executed.
+* Begin to integrate with plutonium by transferring marshaling the query
+  plan across the wire.
+* Work on plan compilation for everything in influxql.Select.
