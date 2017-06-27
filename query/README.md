@@ -367,3 +367,71 @@ package.
 * Begin to integrate with plutonium by transferring marshaling the query
   plan across the wire.
 * Work on plan compilation for everything in influxql.Select.
+
+## Remote Execution
+
+We will need some way to execute nodes remotely. The problem is that we
+have to instantiate them as part of the graph. Or at least we want to
+construct the graph and figure out which parts can be executed remotely.
+It seems like it might be part of the Node interface. Essentially, we
+need a way to run a node and have it absorb some of its dependent nodes
+and remove them from the run graph. This should be possible by changing
+the outputs of the currently running node.
+
+We can likely leave the remote creator as a black box that just says
+"iterators will be created remotely" and then have that iterator
+creating remotely perform its own optimizations by pulling in outputs.
+
+So in the graph, we see each shard creator get told to perform "count()"
+afterwards.
+
+One thing we might want to see is some form of versioning. This might
+have to be optional, but it would be nice to be able to push the graph
+to the remote node and have the remote node be able to say, "I don't
+know how to handle that." The format would either be by sending the
+nodes over as a bread-first search or depth-first search.
+
+So something like sending the node definition and then sending the
+node's outputs (along with the number of outputs).
+
+Whenever a node is read successfully, the server would send back a
+response telling the server to send more. If the server returns an
+error, the node is not sent over and is instead handled locally. If any
+of the origin nodes are not accepted (those without inputs), then the
+series fails. When nodes are finished being sent, a message has to be
+sent (or maybe just an EOF? but that's worked badly for us in the past).
+
+Maybe we would send the message as blobs.
+
+Send the origin nodes first (that way, if any are not accepted, we do
+not have to do much). If we do it that way, that indicates we would need
+to do a breadth-first search. This might be harder since there is more
+memory that we would have to keep (to know who we are referencing), but
+we might just be able to keep pointers to the memory. So we create the
+slice, take the memory of that slice, and then put it into a linked list
+since that will be more memory efficient as a queue.
+
+We would need to define a serialization format for each of the structs.
+
+```
+message Node {
+    required string Name = 1;
+    repeated Argument Args = 2;
+}
+
+message Argument {
+    required string Key = 1;
+    optional bytes Value = 2;
+}
+```
+
+The above would define how to serialize a node. The name would tell the
+remote service which struct was being used. Structs need to be
+registered to be instantiated to avoid a remote execution vulnerability.
+
+The first thing we should do is test serializing a single node and
+having it be instantiated and returning an iterator.
+
+Another difficulty is we need to make sure only one iterator is actually
+produced (although I guess we can add an implicit merge at the end or
+just return them in serial).
