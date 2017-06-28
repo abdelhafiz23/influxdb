@@ -11,9 +11,16 @@ type compiledStatement struct {
 	// Sources holds the data sources this will query from.
 	Sources influxql.Sources
 
-	// FunctionCalls holds a reference to all of the function calls that have
-	// been instantiated.
-	FunctionCalls []*FunctionCall
+	// FunctionCalls holds a reference to the output edge of all of the
+	// function calls that have been instantiated.
+	FunctionCalls []*OutputEdge
+
+	// OnlySelectors is set to true when there are no aggregate functions.
+	OnlySelectors bool
+
+	// TopBottomFunction is set to top or bottom when one of those functions are
+	// used in the statement.
+	TopBottomFunction string
 
 	// AuxFields holds a mapping to the auxiliary fields that need to be
 	// selected. This maps the raw VarRef to a pointer to a shared VarRef. The
@@ -36,7 +43,7 @@ type CompiledStatement interface {
 
 func newCompiler(stmt *influxql.SelectStatement) *compiledStatement {
 	return &compiledStatement{
-		FunctionCalls: make([]*FunctionCall, 0, 5),
+		OnlySelectors: true,
 		OutputEdges:   make([]*OutputEdge, 0, len(stmt.Fields)),
 	}
 }
@@ -97,50 +104,83 @@ func (c *compiledStatement) compileFunction(expr *influxql.Call) (*OutputEdge, e
 	if !ok {
 		return nil, fmt.Errorf("expected field argument in %s()", expr.Name)
 	}
-	call := &FunctionCall{
-		Name: expr.Name,
-		Arg:  *arg0,
+
+	merge := &Merge{}
+	for _, source := range c.Sources {
+		switch source := source.(type) {
+		case *influxql.Measurement:
+			ic := &IteratorCreator{
+				Expr:            arg0,
+				AuxiliaryFields: &c.AuxiliaryFields,
+				Measurement:     source,
+			}
+			ic.Output = merge.AddInput(ic)
+		default:
+			panic("unimplemented")
+		}
 	}
-	c.FunctionCalls = append(c.FunctionCalls, call)
+	call := &FunctionCall{Name: expr.Name}
+	merge.Output, call.Input = AddEdge(merge, call)
+
+	// Mark down some meta properties related to the function for query validation.
+	switch expr.Name {
+	case "top", "bottom":
+		if c.TopBottomFunction == "" {
+			c.TopBottomFunction = expr.Name
+		}
+	case "max", "min", "first", "last", "percentile", "sample":
+	default:
+		c.OnlySelectors = false
+	}
 
 	var out *OutputEdge
 	call.Output, out = NewEdge(call)
+	c.FunctionCalls = append(c.FunctionCalls, out)
 	return out, nil
 }
 
-func (c *compiledStatement) validateFields() error {
-	if c.AuxiliaryFields == nil && len(c.FunctionCalls) == 0 {
-		return errors.New("at least 1 non-time field must be queried")
+func (c *compiledStatement) linkAuxiliaryFields() error {
+	if c.AuxiliaryFields == nil {
+		if len(c.FunctionCalls) == 0 {
+			return errors.New("at least 1 non-time field must be queried")
+		}
+		return nil
 	}
 
 	if c.AuxiliaryFields != nil {
-		onlySelectors := true
-		for _, call := range c.FunctionCalls {
-			switch call.Name {
-			case "top", "buttom", "max", "min", "first", "last", "percentile", "sample":
-			default:
-				onlySelectors = false
-				break
-			}
-		}
-
-		if !onlySelectors {
+		if !c.OnlySelectors {
 			return fmt.Errorf("mixing aggregate and non-aggregate queries is not supported")
 		} else if len(c.FunctionCalls) > 1 {
 			return fmt.Errorf("mixing multiple selector functions with tags or fields is not supported")
 		}
-	}
 
-	if len(c.FunctionCalls) > 1 {
-		for _, call := range c.FunctionCalls {
-			switch call.Name {
-			case "top", "bottom":
-				// Ensure there are not multiple calls if top/bottom is present.
-				if len(c.FunctionCalls) > 1 {
-					return fmt.Errorf("selector function %s() cannot be combined with other functions", call.Name)
+		if len(c.FunctionCalls) == 1 {
+			c.AuxiliaryFields.Input, c.AuxiliaryFields.Output = c.FunctionCalls[0].Insert(c.AuxiliaryFields)
+		} else {
+			// Create a default IteratorCreator for this AuxiliaryFields.
+			merge := &Merge{}
+			for _, source := range c.Sources {
+				switch source := source.(type) {
+				case *influxql.Measurement:
+					ic := &IteratorCreator{
+						AuxiliaryFields: &c.AuxiliaryFields,
+						Measurement:     source,
+					}
+					ic.Output = merge.AddInput(ic)
+				default:
+					panic("unimplemented")
 				}
 			}
+			merge.Output, c.AuxiliaryFields.Input = AddEdge(merge, c.AuxiliaryFields)
 		}
+	}
+	return nil
+}
+
+func (c *compiledStatement) validateFields() error {
+	// Ensure there are not multiple calls if top/bottom is present.
+	if len(c.FunctionCalls) > 1 && c.TopBottomFunction != "" {
+		return fmt.Errorf("selector function %s() cannot be combined with other functions", c.TopBottomFunction)
 	}
 	return nil
 }
@@ -161,6 +201,9 @@ func Compile(stmt *influxql.SelectStatement) (CompiledStatement, error) {
 		c.OutputEdges = append(c.OutputEdges, out)
 	}
 
+	if err := c.linkAuxiliaryFields(); err != nil {
+		return nil, err
+	}
 	if err := c.validateFields(); err != nil {
 		return nil, err
 	}
@@ -168,171 +211,8 @@ func Compile(stmt *influxql.SelectStatement) (CompiledStatement, error) {
 }
 
 func (c *compiledStatement) Select(plan *Plan) ([]*OutputEdge, error) {
-	// If we have functions, instantiate all of them here.
-	if len(c.FunctionCalls) > 0 {
-		for _, call := range c.FunctionCalls {
-			merge := &Merge{}
-			for _, source := range c.Sources {
-				switch source := source.(type) {
-				case *influxql.Measurement:
-					var auxFields []influxql.VarRef
-					if c.AuxiliaryFields != nil {
-						auxFields = c.AuxiliaryFields.Aux
-					}
-					ic := &IteratorCreator{
-						Expr:        &call.Arg,
-						Aux:         auxFields,
-						Measurement: source,
-					}
-					ic.Output = merge.AddInput(ic)
-				}
-			}
-			merge.Output, call.Input = AddEdge(merge, call)
-			if c.AuxiliaryFields != nil {
-				// If there are auxiliary fields, we need to insert it between
-				// the call iterator and its output.
-				c.AuxiliaryFields.Input, c.AuxiliaryFields.Output = call.Output.Insert(c.AuxiliaryFields)
-			}
-		}
-	} else {
-		// Instantiate IteratorCreator nodes for the auxiliary nodes.
-		merge := &Merge{}
-		for _, source := range c.Sources {
-			switch source := source.(type) {
-			case *influxql.Measurement:
-				var auxFields []influxql.VarRef
-				if c.AuxiliaryFields != nil {
-					auxFields = c.AuxiliaryFields.Aux
-				}
-				ic := &IteratorCreator{Aux: auxFields, Measurement: source}
-				ic.Output = merge.AddInput(ic)
-			default:
-				panic("unimplemented")
-			}
-		}
-		merge.Output, c.AuxiliaryFields.Input = AddEdge(merge, c.AuxiliaryFields)
-	}
-
 	for _, out := range c.OutputEdges {
 		plan.AddTarget(out)
 	}
 	return c.OutputEdges, nil
 }
-
-//func buildAuxIterators(stmt *influxql.SelectStatement, info *selectInfo) ([]*OutputEdge, error) {
-//	// Determine auxiliary fields to be selected.
-//	auxFields := make([]influxql.VarRef, 0, len(info.refs))
-//	for ref := range info.refs {
-//		auxFields = append(auxFields, *ref)
-//	}
-//	sort.Sort(influxql.VarRefs(auxFields))
-//
-//	// Create IteratorCreator node.
-//	merge := &Merge{}
-//	for _, source := range stmt.Sources {
-//		switch source := source.(type) {
-//		case *influxql.Measurement:
-//			ic := &IteratorCreator{Aux: auxFields, Measurement: source}
-//			ic.Output = merge.AddInput(ic)
-//		default:
-//			panic("unimplemented")
-//		}
-//	}
-//
-//	var out *OutputEdge
-//	merge.Output, out = NewEdge(merge)
-//
-//	if stmt.Limit > 0 || stmt.Offset > 0 {
-//		limit := &Limit{
-//			Limit:  stmt.Limit,
-//			Offset: stmt.Offset,
-//			Input:  out,
-//		}
-//		limit.Output, out = limit.Input.Append(limit)
-//	}
-//
-//	fields := &AuxiliaryFields{Aux: auxFields, Input: out}
-//	out.Node = fields
-//	outputs := make([]*OutputEdge, 0, len(stmt.Fields))
-//	for _, field := range stmt.Fields {
-//		outputs = append(outputs, buildAuxIterator(field.Expr, fields))
-//	}
-//	return outputs, nil
-//}
-//
-//func buildAuxIterator(expr influxql.Expr, aitr *AuxiliaryFields) *OutputEdge {
-//	switch expr := expr.(type) {
-//	case *influxql.VarRef:
-//		return aitr.Iterator(expr)
-//	case *influxql.BinaryExpr:
-//		lhs := buildAuxIterator(expr.LHS, aitr)
-//		rhs := buildAuxIterator(expr.RHS, aitr)
-//
-//		bexpr := &BinaryExpr{
-//			LHS:  lhs,
-//			RHS:  rhs,
-//			Op:   expr.Op,
-//			Desc: fmt.Sprintf("%s %s %s", expr.LHS, expr.Op, expr.RHS),
-//		}
-//		lhs.Node, rhs.Node = bexpr, bexpr
-//
-//		var out *OutputEdge
-//		bexpr.Output, out = NewEdge(bexpr)
-//		return out
-//	case *influxql.ParenExpr:
-//		return buildAuxIterator(expr.Expr, aitr)
-//	default:
-//		panic("unimplemented")
-//	}
-//}
-//
-//func buildFieldIterators(stmt *influxql.SelectStatement) ([]*OutputEdge, error) {
-//	edges := make([]*OutputEdge, len(stmt.Fields))
-//	for i, field := range stmt.Fields {
-//		out, err := buildExprIterator(field.Expr, stmt.Sources)
-//		if err != nil {
-//			return nil, err
-//		}
-//		edges[i] = out
-//	}
-//	return edges, nil
-//}
-//
-//func buildExprIterator(expr influxql.Expr, sources influxql.Sources) (*OutputEdge, error) {
-//	switch expr := expr.(type) {
-//	case *influxql.VarRef:
-//		merge := &Merge{}
-//		for _, source := range sources {
-//			switch source := source.(type) {
-//			case *influxql.Measurement:
-//				ic := &IteratorCreator{Expr: expr, Measurement: source}
-//				ic.Output = merge.AddInput(ic)
-//			default:
-//				return nil, fmt.Errorf("unimplemented source type: %T", source)
-//			}
-//		}
-//
-//		var out *OutputEdge
-//		merge.Output, out = NewEdge(merge)
-//		return out, nil
-//	case *influxql.Call:
-//		switch expr.Name {
-//		case "count":
-//			fallthrough
-//		case "min", "max", "sum", "first", "last", "mean":
-//			arg0 := expr.Args[0].(*influxql.VarRef)
-//			out, err := buildExprIterator(arg0, sources)
-//			if err != nil {
-//				return nil, err
-//			}
-//
-//			call := &FunctionCall{Name: expr.Name, Input: out}
-//			call.Output, out = out.Append(call)
-//			return out, nil
-//		default:
-//			return nil, errors.New("unimplemented")
-//		}
-//	default:
-//		return nil, fmt.Errorf("invalid expression type: %T", expr)
-//	}
-//}

@@ -190,10 +190,10 @@ func (i *Iterator) Iterators() []influxql.Iterator {
 var _ Node = &IteratorCreator{}
 
 type IteratorCreator struct {
-	Expr        influxql.Expr
-	Aux         []influxql.VarRef
-	Measurement *influxql.Measurement
-	Output      *InputEdge
+	Expr            influxql.Expr
+	AuxiliaryFields **AuxiliaryFields
+	Measurement     *influxql.Measurement
+	Output          *InputEdge
 }
 
 func (ic *IteratorCreator) Description() string {
@@ -230,10 +230,14 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 	merge.Output.Node = merge
 
 	// Lookup the shards.
+	var auxFields []influxql.VarRef
+	if ic.AuxiliaryFields != nil && *ic.AuxiliaryFields != nil {
+		auxFields = (*ic.AuxiliaryFields).Aux
+	}
 	for _, shardInfo := range shards {
 		sh := &ShardIteratorCreator{
 			Expr:    ic.Expr,
-			Aux:     ic.Aux,
+			Aux:     auxFields,
 			Ref:     ic.Measurement.Name,
 			ShardID: shardInfo.ID,
 		}
