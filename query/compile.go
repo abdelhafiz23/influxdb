@@ -21,6 +21,10 @@ type compiledStatement struct {
 	// type mapping gets shared.
 	AuxiliaryFields *AuxiliaryFields
 
+	// Distinct holds the Distinct statement. If Distinct is set, there can be
+	// no auxiliary fields or function calls.
+	Distinct *Distinct
+
 	// OutputEdges holds the outermost edges that will be used to read from
 	// when returning results.
 	OutputEdges []*OutputEdge
@@ -46,23 +50,12 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error)
 		}
 		return c.AuxiliaryFields.Iterator(expr), nil
 	case *influxql.Call:
-		if exp, got := 1, len(expr.Args); exp != got {
-			return nil, fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
+		switch expr.Name {
+		case "count", "min", "max", "sum", "first", "last", "mean":
+			return c.compileFunction(expr)
+		default:
+			return nil, errors.New("unimplemented")
 		}
-
-		arg0, ok := expr.Args[0].(*influxql.VarRef)
-		if !ok {
-			return nil, fmt.Errorf("expected field argument in %s()", expr.Name)
-		}
-		call := &FunctionCall{
-			Name: expr.Name,
-			Arg:  *arg0,
-		}
-		c.FunctionCalls = append(c.FunctionCalls, call)
-
-		var out *OutputEdge
-		call.Output, out = NewEdge(call)
-		return out, nil
 	case *influxql.BinaryExpr:
 		// Check if either side is a literal so we only compile one side if it is.
 		if _, ok := expr.LHS.(influxql.Literal); ok {
@@ -85,6 +78,34 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error)
 		}
 	}
 	return nil, errors.New("unimplemented")
+}
+
+func (c *compiledStatement) compileFunction(expr *influxql.Call) (*OutputEdge, error) {
+	if exp, got := 1, len(expr.Args); exp != got {
+		return nil, fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
+	}
+
+	// If we have count(), the argument may be a distinct() call.
+	if expr.Name == "count" {
+		if arg0, ok := expr.Args[0].(*influxql.Call); ok && arg0.Name == "distinct" {
+			return nil, errors.New("unimplemented")
+		}
+	}
+
+	// Must be a variable reference.
+	arg0, ok := expr.Args[0].(*influxql.VarRef)
+	if !ok {
+		return nil, fmt.Errorf("expected field argument in %s()", expr.Name)
+	}
+	call := &FunctionCall{
+		Name: expr.Name,
+		Arg:  *arg0,
+	}
+	c.FunctionCalls = append(c.FunctionCalls, call)
+
+	var out *OutputEdge
+	call.Output, out = NewEdge(call)
+	return out, nil
 }
 
 func (c *compiledStatement) validateFields() error {

@@ -397,6 +397,8 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 	return nil
 }
 
+type Distinct struct{}
+
 type AuxiliaryFields struct {
 	Aux     []influxql.VarRef
 	Input   *OutputEdge
