@@ -13,7 +13,7 @@ type compiledStatement struct {
 
 	// FunctionCalls holds a reference to all of the function calls that have
 	// been instantiated.
-	FunctionCalls []*influxql.Call
+	FunctionCalls []*FunctionCall
 
 	// AuxFields holds a mapping to the auxiliary fields that need to be
 	// selected. This maps the raw VarRef to a pointer to a shared VarRef. The
@@ -32,7 +32,7 @@ type CompiledStatement interface {
 
 func newCompiler(stmt *influxql.SelectStatement) *compiledStatement {
 	return &compiledStatement{
-		FunctionCalls: make([]*influxql.Call, 0, 5),
+		FunctionCalls: make([]*FunctionCall, 0, 5),
 		OutputEdges:   make([]*OutputEdge, 0, len(stmt.Fields)),
 	}
 }
@@ -46,8 +46,43 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error)
 		}
 		return c.AuxiliaryFields.Iterator(expr), nil
 	case *influxql.Call:
-		c.FunctionCalls = append(c.FunctionCalls, expr)
-		return nil, nil
+		if exp, got := 1, len(expr.Args); exp != got {
+			return nil, fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
+		}
+
+		arg0, ok := expr.Args[0].(*influxql.VarRef)
+		if !ok {
+			return nil, fmt.Errorf("expected field argument in %s()", expr.Name)
+		}
+		call := &FunctionCall{
+			Name: expr.Name,
+			Arg:  *arg0,
+		}
+		c.FunctionCalls = append(c.FunctionCalls, call)
+
+		var out *OutputEdge
+		call.Output, out = NewEdge(call)
+		return out, nil
+	case *influxql.BinaryExpr:
+		// Check if either side is a literal so we only compile one side if it is.
+		if _, ok := expr.LHS.(influxql.Literal); ok {
+		} else if _, ok := expr.RHS.(influxql.Literal); ok {
+		} else {
+			lhs, err := c.compileExpr(expr.LHS)
+			if err != nil {
+				return nil, err
+			}
+			rhs, err := c.compileExpr(expr.RHS)
+			if err != nil {
+				return nil, err
+			}
+			node := &BinaryExpr{LHS: lhs, RHS: rhs, Op: expr.Op}
+			lhs.Node, rhs.Node = node, node
+
+			var out *OutputEdge
+			node.Output, out = NewEdge(node)
+			return out, nil
+		}
 	}
 	return nil, errors.New("unimplemented")
 }
@@ -112,22 +147,50 @@ func Compile(stmt *influxql.SelectStatement) (CompiledStatement, error) {
 }
 
 func (c *compiledStatement) Select(plan *Plan) ([]*OutputEdge, error) {
-	// Create IteratorCreator node.
-	merge := &Merge{}
-	for _, source := range c.Sources {
-		switch source := source.(type) {
-		case *influxql.Measurement:
-			var auxFields []influxql.VarRef
-			if c.AuxiliaryFields != nil {
-				auxFields = c.AuxiliaryFields.Aux
+	// If we have functions, instantiate all of them here.
+	if len(c.FunctionCalls) > 0 {
+		for _, call := range c.FunctionCalls {
+			merge := &Merge{}
+			for _, source := range c.Sources {
+				switch source := source.(type) {
+				case *influxql.Measurement:
+					var auxFields []influxql.VarRef
+					if c.AuxiliaryFields != nil {
+						auxFields = c.AuxiliaryFields.Aux
+					}
+					ic := &IteratorCreator{
+						Expr:        &call.Arg,
+						Aux:         auxFields,
+						Measurement: source,
+					}
+					ic.Output = merge.AddInput(ic)
+				}
 			}
-			ic := &IteratorCreator{Aux: auxFields, Measurement: source}
-			ic.Output = merge.AddInput(ic)
-		default:
-			panic("unimplemented")
+			merge.Output, call.Input = AddEdge(merge, call)
+			if c.AuxiliaryFields != nil {
+				// If there are auxiliary fields, we need to insert it between
+				// the call iterator and its output.
+				c.AuxiliaryFields.Input, c.AuxiliaryFields.Output = call.Output.Insert(c.AuxiliaryFields)
+			}
 		}
+	} else {
+		// Instantiate IteratorCreator nodes for the auxiliary nodes.
+		merge := &Merge{}
+		for _, source := range c.Sources {
+			switch source := source.(type) {
+			case *influxql.Measurement:
+				var auxFields []influxql.VarRef
+				if c.AuxiliaryFields != nil {
+					auxFields = c.AuxiliaryFields.Aux
+				}
+				ic := &IteratorCreator{Aux: auxFields, Measurement: source}
+				ic.Output = merge.AddInput(ic)
+			default:
+				panic("unimplemented")
+			}
+		}
+		merge.Output, c.AuxiliaryFields.Input = AddEdge(merge, c.AuxiliaryFields)
 	}
-	merge.Output, c.AuxiliaryFields.Input = AddEdge(merge, c.AuxiliaryFields)
 
 	for _, out := range c.OutputEdges {
 		plan.AddTarget(out)

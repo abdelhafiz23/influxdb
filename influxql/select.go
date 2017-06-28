@@ -1176,6 +1176,10 @@ func buildLHSTransformIterator(lhs Literal, rhs Iterator, op Token, opt Iterator
 	return nil, fmt.Errorf("unable to construct lhs transform iterator from %T and %T", lhs, rhs)
 }
 
+func BuildTransformIterator(lhs Iterator, rhs Iterator, op Token, opt IteratorOptions) (Iterator, error) {
+	return buildTransformIterator(lhs, rhs, op, opt)
+}
+
 func buildTransformIterator(lhs Iterator, rhs Iterator, op Token, opt IteratorOptions) (Iterator, error) {
 	fn := binaryExprFunc(iteratorDataType(lhs), iteratorDataType(rhs), op)
 	switch fn := fn.(type) {

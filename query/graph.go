@@ -70,7 +70,7 @@ func (e *OutputEdge) Iterator() influxql.Iterator {
 	e.Input.mu.RLock()
 	if !e.Input.ready {
 		e.Input.mu.RUnlock()
-		panic("attempted to retrieve an iterator from an edge before it was ready")
+		panic(fmt.Sprintf("attempted to retrieve an iterator from an edge before it was ready: %T", e.Input.Node))
 	}
 	itr := e.Input.itr
 	e.Input.mu.RUnlock()
@@ -362,6 +362,7 @@ var _ Node = &FunctionCall{}
 
 type FunctionCall struct {
 	Name   string
+	Arg    influxql.VarRef
 	Input  *OutputEdge
 	Output *InputEdge
 }
@@ -378,12 +379,28 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 		c.Output.SetIterator(nil)
 		return nil
 	}
+
+	call := &influxql.Call{
+		Name: c.Name,
+		Args: []influxql.Expr{&c.Arg},
+	}
+	opt := influxql.IteratorOptions{
+		Expr:      call,
+		StartTime: influxql.MinTime,
+		EndTime:   influxql.MaxTime,
+	}
+	itr, err := influxql.NewCallIterator(c.Input.Iterator(), opt)
+	if err != nil {
+		return err
+	}
+	c.Output.SetIterator(itr)
 	return nil
 }
 
 type AuxiliaryFields struct {
 	Aux     []influxql.VarRef
 	Input   *OutputEdge
+	Output  *InputEdge
 	outputs []*InputEdge
 	refs    []*influxql.VarRef
 }
@@ -393,10 +410,22 @@ func (c *AuxiliaryFields) Description() string {
 }
 
 func (c *AuxiliaryFields) Inputs() []*OutputEdge { return []*OutputEdge{c.Input} }
-func (c *AuxiliaryFields) Outputs() []*InputEdge { return c.outputs }
+func (c *AuxiliaryFields) Outputs() []*InputEdge {
+	if c.Output != nil {
+		outputs := make([]*InputEdge, 0, len(c.outputs)+1)
+		outputs = append(outputs, c.Output)
+		outputs = append(outputs, c.outputs...)
+		return outputs
+	} else {
+		return c.outputs
+	}
+}
 
 func (c *AuxiliaryFields) Execute(plan *Plan) error {
 	if plan.DryRun {
+		if c.Output != nil {
+			c.Output.SetIterator(nil)
+		}
 		for _, output := range c.outputs {
 			output.SetIterator(nil)
 		}
@@ -409,7 +438,12 @@ func (c *AuxiliaryFields) Execute(plan *Plan) error {
 		itr := aitr.Iterator(ref.Val, ref.Type)
 		c.outputs[i].SetIterator(itr)
 	}
-	aitr.Background()
+	if c.Output != nil {
+		c.Output.SetIterator(aitr)
+		aitr.Start()
+	} else {
+		aitr.Background()
+	}
 	return nil
 }
 
@@ -457,6 +491,14 @@ func (c *BinaryExpr) Execute(plan *Plan) error {
 		c.Output.SetIterator(nil)
 		return nil
 	}
+
+	opt := influxql.IteratorOptions{}
+	lhs, rhs := c.LHS.Iterator(), c.RHS.Iterator()
+	itr, err := influxql.BuildTransformIterator(lhs, rhs, c.Op, opt)
+	if err != nil {
+		return err
+	}
+	c.Output.SetIterator(itr)
 	return nil
 }
 
