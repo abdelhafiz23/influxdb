@@ -1771,30 +1771,30 @@ func (s *SelectStatement) HasDimensionWildcard() bool {
 }
 
 func (s *SelectStatement) validate(tr targetRequirement) error {
-	if err := s.validateFields(); err != nil {
-		return err
-	}
-
-	if err := s.validateDimensions(); err != nil {
-		return err
-	}
-
-	if err := s.validateDistinct(); err != nil {
-		return err
-	}
-
-	if err := s.validateTopBottom(); err != nil {
-		return err
-	}
-
-	if err := s.validateAggregates(tr); err != nil {
-		return err
-	}
-
-	if err := s.validateFill(); err != nil {
-		return err
-	}
-
+	//	if err := s.validateFields(); err != nil {
+	//		return err
+	//	}
+	//
+	//	if err := s.validateDimensions(); err != nil {
+	//		return err
+	//	}
+	//
+	//	if err := s.validateDistinct(); err != nil {
+	//		return err
+	//	}
+	//
+	//	if err := s.validateTopBottom(); err != nil {
+	//		return err
+	//	}
+	//
+	//	if err := s.validateAggregates(tr); err != nil {
+	//		return err
+	//	}
+	//
+	//	if err := s.validateFill(); err != nil {
+	//		return err
+	//	}
+	//
 	return nil
 }
 

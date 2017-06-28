@@ -162,6 +162,31 @@ func AllInputsReady(n Node) bool {
 	return true
 }
 
+var _ Node = &Iterator{}
+
+// Iterator holds the final Iterator or Iterators produced for consumption.
+// It has no outputs and may contain multiple (ordered) inputs.
+type Iterator struct {
+	Field      *influxql.Field
+	InputEdges []*OutputEdge
+}
+
+func (i *Iterator) Description() string {
+	return i.Field.String()
+}
+
+func (i *Iterator) Inputs() []*OutputEdge    { return i.InputEdges }
+func (i *Iterator) Outputs() []*InputEdge    { return nil }
+func (i *Iterator) Execute(plan *Plan) error { return nil }
+
+func (i *Iterator) Iterators() []influxql.Iterator {
+	itrs := make([]influxql.Iterator, 0, len(i.InputEdges))
+	for _, input := range i.InputEdges {
+		itrs = append(itrs, input.Iterator())
+	}
+	return itrs
+}
+
 var _ Node = &IteratorCreator{}
 
 type IteratorCreator struct {
@@ -360,7 +385,7 @@ type AuxiliaryFields struct {
 	Aux     []influxql.VarRef
 	Input   *OutputEdge
 	outputs []*InputEdge
-	refs    []influxql.VarRef
+	refs    []*influxql.VarRef
 }
 
 func (c *AuxiliaryFields) Description() string {
@@ -388,10 +413,26 @@ func (c *AuxiliaryFields) Execute(plan *Plan) error {
 	return nil
 }
 
+// Iterator registers a new OutputEdge that registers the VarRef to be read and
+// sent to the OutputEdge.
 func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *OutputEdge {
+	// Create the new edge.
 	in, out := NewEdge(c)
 	c.outputs = append(c.outputs, in)
-	c.refs = append(c.refs, *ref)
+
+	// Attempt to find an existing variable that matches this one to avoid
+	// duplicating the same variable reference in the auxiliary fields.
+	for idx := range c.Aux {
+		v := &c.Aux[idx]
+		if *v == *ref {
+			c.refs = append(c.refs, v)
+			return out
+		}
+	}
+
+	// Register a new auxiliary field and take a reference to it.
+	c.Aux = append(c.Aux, *ref)
+	c.refs = append(c.refs, &c.Aux[len(c.Aux)-1])
 	return out
 }
 

@@ -402,7 +402,7 @@ func (e *StatementExecutor) executeDropUserStatement(q *influxql.DropUserStateme
 }
 
 func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement, ctx *influxql.ExecutionContext) (models.Rows, error) {
-	edges, err := query.Compile(q.Statement)
+	c, err := query.Compile(q.Statement)
 	if err != nil {
 		return nil, err
 	}
@@ -410,8 +410,8 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 	plan := query.NewPlan()
 	plan.DryRun = true
 	plan.MetaClient = e.MetaClient
-	for _, edge := range edges {
-		plan.AddTarget(edge)
+	if _, err := c.Select(plan); err != nil {
+		return nil, err
 	}
 
 	id := 1
@@ -654,7 +654,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		}
 	}
 
-	edges, err := query.Compile(stmt)
+	c, err := query.Compile(stmt)
 	if err != nil {
 		return nil, stmt, err
 	}
@@ -662,8 +662,9 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 	plan := query.NewPlan()
 	plan.MetaClient = e.MetaClient
 	plan.TSDBStore = e.TSDBStore
-	for _, edge := range edges {
-		plan.AddTarget(edge)
+	edges, err := c.Select(plan)
+	if err != nil {
+		return nil, stmt, err
 	}
 
 	for {
@@ -678,8 +679,8 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 	}
 
 	itrs := make([]influxql.Iterator, len(edges))
-	for i, edge := range edges {
-		itrs[i] = edge.Iterator()
+	for i, out := range edges {
+		itrs[i] = out.Iterator()
 	}
 
 	if e.MaxSelectPointN > 0 {

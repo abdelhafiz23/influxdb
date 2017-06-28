@@ -423,6 +423,10 @@ message Argument {
     required string Key = 1;
     optional bytes Value = 2;
 }
+
+message Response {
+    optional string Error = 1;
+}
 ```
 
 The above would define how to serialize a node. The name would tell the
@@ -435,3 +439,20 @@ having it be instantiated and returning an iterator.
 Another difficulty is we need to make sure only one iterator is actually
 produced (although I guess we can add an implicit merge at the end or
 just return them in serial).
+
+After each node transfer, the client would read the response that is
+marshaled back. If there is a fatal error (such as an 
+
+## Unknown Number of Outputs
+
+Interestingly, we want compile to work even when we don't know the
+number of outputs.
+
+Previously, we had this reading from the output edges, but that makes it
+hard to add additional output nodes dynamically (such as from a
+wildcard). It might be more productive to have a special node endpoint
+that has an execute that does nothing, has no outputs, but can be
+referenced to retrieve iterators from.
+
+So the node references the endpoint. Those endpoints are what gets
+returned.
