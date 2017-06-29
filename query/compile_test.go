@@ -124,7 +124,7 @@ func TestCompile_Failures(t *testing.T) {
 			err:  `distinct function requires at least one argument`,
 		},
 		{
-			name: "CountDistinctManyArguments",
+			name: "CountDistinctTooManyArguments",
 			stmt: `SELECT count(distinct(value, host)) FROM cpu`,
 			err:  `distinct function can only have one argument`,
 		},
@@ -132,6 +132,51 @@ func TestCompile_Failures(t *testing.T) {
 			name: "CountDistinctInvalidArgument",
 			stmt: `SELECT count(distinct(2)) FROM cpu`,
 			err:  `expected field argument in distinct()`,
+		},
+		{
+			name: "InvalidDimensionFunction",
+			stmt: `SELECT value FROM cpu GROUP BY now()`,
+			err:  `only time() calls allowed in dimensions`,
+		},
+		{
+			name: "TimeDimensionsNoArgument",
+			stmt: `SELECT value FROM cpu GROUP BY time()`,
+			err:  `time dimension expected 1 or 2 arguments`,
+		},
+		{
+			name: "TimeDimensionsTooManyArguments",
+			stmt: `SELECT value FROM cpu GROUP BY time(5m, 30s, 1ms)`,
+			err:  `time dimension expected 1 or 2 arguments`,
+		},
+		{
+			name: "TimeDimensionsInvalidArgument",
+			stmt: `SELECT value FROM cpu GROUP BY time('unexpected')`,
+			err:  `time dimension must have duration argument`,
+		},
+		{
+			name: "MultipleTimeDimensions",
+			stmt: `SELECT value FROM cpu GROUP BY time(5m), time(1m)`,
+			err:  `multiple time dimensions not allowed`,
+		},
+		{
+			name: "TimeDimensionsInvalidOffsetFunction",
+			stmt: `SELECT value FROM cpu GROUP BY time(5m, unexpected())`,
+			err:  `time dimension offset function must be now()`,
+		},
+		{
+			name: "TimeDimensionsOffsetTooManyArguments",
+			stmt: `SELECT value FROM cpu GROUP BY time(5m, now(1m))`,
+			err:  `time dimension offset now() function requires no arguments`,
+		},
+		{
+			name: "TimeDimensionsInvalidOffsetArgument",
+			stmt: `SELECT value FROM cpu GROUP BY time(5m, 'unexpected')`,
+			err:  `time dimension offset must be duration or now()`,
+		},
+		{
+			name: "InvalidDimension",
+			stmt: `SELECT value FROM cpu GROUP BY 'unexpected'`,
+			err:  `only time and tag dimensions allowed`,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,7 +186,8 @@ func TestCompile_Failures(t *testing.T) {
 			}
 			s := stmt.(*influxql.SelectStatement)
 
-			if _, err := query.Compile(s); err == nil {
+			opt := query.CompileOptions{}
+			if _, err := query.Compile(s, opt); err == nil {
 				t.Error("expected error")
 			} else if have, want := err.Error(), tt.err; have != want {
 				t.Errorf("unexpected error: %s != %s", have, want)

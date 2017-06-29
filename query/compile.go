@@ -3,13 +3,25 @@ package query
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/influxdata/influxdb/influxql"
 )
 
+type CompileOptions struct {
+	Now time.Time
+}
+
 type compiledStatement struct {
 	// Sources holds the data sources this will query from.
 	Sources influxql.Sources
+
+	// Dimensions holds the groupings for the statement.
+	Dimensions []string
+
+	// Interval holds the time grouping interval.
+	Interval influxql.Interval
 
 	// FunctionCalls holds a reference to the output edge of all of the
 	// function calls that have been instantiated.
@@ -31,16 +43,23 @@ type compiledStatement struct {
 	// OutputEdges holds the outermost edges that will be used to read from
 	// when returning results.
 	OutputEdges []*OutputEdge
+
+	// Options holds the configured compiler options.
+	Options CompileOptions
 }
 
 type CompiledStatement interface {
 	Select(plan *Plan) ([]*OutputEdge, error)
 }
 
-func newCompiler(stmt *influxql.SelectStatement) *compiledStatement {
+func newCompiler(stmt *influxql.SelectStatement, opt CompileOptions) *compiledStatement {
+	if opt.Now.IsZero() {
+		opt.Now = time.Now().UTC()
+	}
 	return &compiledStatement{
 		OnlySelectors: true,
 		OutputEdges:   make([]*OutputEdge, 0, len(stmt.Fields)),
+		Options:       opt,
 	}
 }
 
@@ -216,10 +235,60 @@ func (c *compiledStatement) validateFields() error {
 	return nil
 }
 
-func Compile(stmt *influxql.SelectStatement) (CompiledStatement, error) {
+func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatement, error) {
 	// Compile each of the expressions.
-	c := newCompiler(stmt)
+	c := newCompiler(stmt, opt)
 	c.Sources = append(c.Sources, stmt.Sources...)
+
+	// Read the dimensions of the query and retrieve the interval if it exists.
+	c.Dimensions = make([]string, 0, len(stmt.Dimensions))
+	for _, d := range stmt.Dimensions {
+		switch expr := d.Expr.(type) {
+		case *influxql.VarRef:
+			if strings.ToLower(expr.Val) == "time" {
+				return nil, errors.New("time() is a function and expects at least one argument")
+			}
+			c.Dimensions = append(c.Dimensions, expr.Val)
+		case *influxql.Call:
+			// Ensure the call is time() and it has one or two duration arguments.
+			// If we already have a duration
+			if expr.Name != "time" {
+				return nil, errors.New("only time() calls allowed in dimensions")
+			} else if got := len(expr.Args); got < 1 || got > 2 {
+				return nil, errors.New("time dimension expected 1 or 2 arguments")
+			} else if lit, ok := expr.Args[0].(*influxql.DurationLiteral); !ok {
+				return nil, errors.New("time dimension must have duration argument")
+			} else if c.Interval.Duration != 0 {
+				return nil, errors.New("multiple time dimensions not allowed")
+			} else {
+				c.Interval.Duration = lit.Val
+				if len(expr.Args) == 2 {
+					switch lit := expr.Args[1].(type) {
+					case *influxql.DurationLiteral:
+						c.Interval.Offset = lit.Val % c.Interval.Duration
+					case *influxql.TimeLiteral:
+						c.Interval.Offset = lit.Val.Sub(lit.Val.Truncate(c.Interval.Duration))
+					case *influxql.Call:
+						if lit.Name != "now" {
+							return nil, errors.New("time dimension offset function must be now()")
+						} else if len(lit.Args) != 0 {
+							return nil, errors.New("time dimension offset now() function requires no arguments")
+						}
+						now := c.Options.Now
+						c.Interval.Offset = now.Sub(now.Truncate(c.Interval.Duration))
+					default:
+						return nil, errors.New("time dimension offset must be duration or now()")
+					}
+				}
+			}
+		case *influxql.Wildcard:
+		case *influxql.RegexLiteral:
+			return nil, errors.New("unimplemented")
+		default:
+			return nil, errors.New("only time and tag dimensions allowed")
+		}
+	}
+
 	for _, f := range stmt.Fields {
 		if ref, ok := f.Expr.(*influxql.VarRef); ok && ref.Val == "time" {
 			continue
