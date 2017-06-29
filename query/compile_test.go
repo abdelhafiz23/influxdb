@@ -178,6 +178,56 @@ func TestCompile_Failures(t *testing.T) {
 			stmt: `SELECT value FROM cpu GROUP BY 'unexpected'`,
 			err:  `only time and tag dimensions allowed`,
 		},
+		{
+			name: "TopFunctionNoArguments",
+			stmt: `SELECT top(value) FROM cpu`,
+			err:  `invalid number of arguments for top, expected at least 2, got 1`,
+		},
+		{
+			name: "TopFunctionInvalidFieldArgument",
+			stmt: `SELECT top('unexpected', 5) FROM cpu`,
+			err:  `expected field argument in top()`,
+		},
+		{
+			name: "TopFunctionInvalidDimensions",
+			stmt: `SELECT top(value, 'unexpected', 5) FROM cpu`,
+			err:  `only fields or tags are allowed in top(), found 'unexpected'`,
+		},
+		{
+			name: "TopFunctionInvalidLimit",
+			stmt: `SELECT top(value, 2.5) FROM cpu`,
+			err:  `expected integer as last argument in top(), found 2.500`,
+		},
+		{
+			name: "TopFunctionNegativeLimit",
+			stmt: `SELECT top(value, -1) FROM cpu`,
+			err:  `limit (-1) in top function must be at least 1`,
+		},
+		{
+			name: "BottomFunctionNoArguments",
+			stmt: `SELECT bottom(value) FROM cpu`,
+			err:  `invalid number of arguments for bottom, expected at least 2, got 1`,
+		},
+		{
+			name: "BottomFunctionInvalidFieldArgument",
+			stmt: `SELECT bottom('unexpected', 5) FROM cpu`,
+			err:  `expected field argument in bottom()`,
+		},
+		{
+			name: "BottomFunctionInvalidDimensions",
+			stmt: `SELECT bottom(value, 'unexpected', 5) FROM cpu`,
+			err:  `only fields or tags are allowed in bottom(), found 'unexpected'`,
+		},
+		{
+			name: "BottomFunctionInvalidLimit",
+			stmt: `SELECT bottom(value, 2.5) FROM cpu`,
+			err:  `expected integer as last argument in bottom(), found 2.500`,
+		},
+		{
+			name: "BottomFunctionNegativeLimit",
+			stmt: `SELECT bottom(value, -1) FROM cpu`,
+			err:  `limit (-1) in bottom function must be at least 1`,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt.stmt)

@@ -77,6 +77,8 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error)
 			return c.compileFunction(expr)
 		case "distinct":
 			return c.compileDistinct(expr)
+		case "top", "bottom":
+			return c.compileTopBottom(expr)
 		default:
 			return nil, errors.New("unimplemented")
 		}
@@ -202,6 +204,49 @@ func (c *compiledStatement) compileDistinct(call *influxql.Call) (*OutputEdge, e
 
 	var out *OutputEdge
 	d.Output, out = NewEdge(d)
+	c.FunctionCalls = append(c.FunctionCalls, out)
+	return out, nil
+}
+
+func (c *compiledStatement) compileTopBottom(call *influxql.Call) (*OutputEdge, error) {
+	if c.TopBottomFunction != "" {
+		return nil, fmt.Errorf("selector function %s() cannot be combined with other functions", c.TopBottomFunction)
+	}
+
+	if exp, got := 2, len(call.Args); got < exp {
+		return nil, fmt.Errorf("invalid number of arguments for %s, expected at least %d, got %d", call.Name, exp, got)
+	}
+
+	ref, ok := call.Args[0].(*influxql.VarRef)
+	if !ok {
+		return nil, fmt.Errorf("expected field argument in %s()", call.Name)
+	}
+
+	var dimensions []influxql.VarRef
+	if len(call.Args) > 2 {
+		dimensions = make([]influxql.VarRef, 0, len(call.Args))
+		for _, v := range call.Args[1 : len(call.Args)-1] {
+			if ref, ok := v.(*influxql.VarRef); ok {
+				dimensions = append(dimensions, *ref)
+			} else {
+				return nil, fmt.Errorf("only fields or tags are allowed in %s(), found %s", call.Name, v)
+			}
+		}
+	}
+
+	limit, ok := call.Args[len(call.Args)-1].(*influxql.IntegerLiteral)
+	if !ok {
+		return nil, fmt.Errorf("expected integer as last argument in %s(), found %s", call.Name, call.Args[len(call.Args)-1])
+	} else if limit.Val <= 0 {
+		return nil, fmt.Errorf("limit (%d) in %s function must be at least 1", limit.Val, call.Name)
+	}
+	c.TopBottomFunction = call.Name
+
+	selector := &TopBottomSelector{Dimensions: dimensions}
+	selector.Input = c.compileVarRef(ref, selector)
+
+	var out *OutputEdge
+	selector.Output, out = NewEdge(selector)
 	c.FunctionCalls = append(c.FunctionCalls, out)
 	return out, nil
 }

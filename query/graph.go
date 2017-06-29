@@ -3,6 +3,7 @@ package query
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -428,6 +429,33 @@ func (d *Distinct) Execute(plan *Plan) error {
 		return err
 	}
 	d.Output.SetIterator(itr)
+	return nil
+}
+
+type TopBottomSelector struct {
+	Dimensions []influxql.VarRef
+	Limit      int
+	Input      *OutputEdge
+	Output     *InputEdge
+}
+
+func (s *TopBottomSelector) Description() string {
+	dims := make([]string, len(s.Dimensions))
+	for i, d := range s.Dimensions {
+		dims[i] = d.String()
+	}
+	return fmt.Sprintf("top(%s, %d)", strings.Join(dims, ", "), s.Limit)
+}
+
+func (s *TopBottomSelector) Inputs() []*OutputEdge { return []*OutputEdge{s.Input} }
+func (s *TopBottomSelector) Outputs() []*InputEdge { return []*InputEdge{s.Output} }
+
+func (s *TopBottomSelector) Execute(plan *Plan) error {
+	if plan.DryRun {
+		s.Output.SetIterator(nil)
+		return nil
+	}
+	s.Output.SetIterator(nil)
 	return nil
 }
 
