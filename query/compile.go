@@ -28,10 +28,6 @@ type compiledStatement struct {
 	// type mapping gets shared.
 	AuxiliaryFields *AuxiliaryFields
 
-	// Distinct holds the Distinct statement. If Distinct is set, there can be
-	// no auxiliary fields or function calls.
-	Distinct *Distinct
-
 	// OutputEdges holds the outermost edges that will be used to read from
 	// when returning results.
 	OutputEdges []*OutputEdge
@@ -60,9 +56,13 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error)
 		switch expr.Name {
 		case "count", "min", "max", "sum", "first", "last", "mean":
 			return c.compileFunction(expr)
+		case "distinct":
+			return c.compileDistinct(expr)
 		default:
 			return nil, errors.New("unimplemented")
 		}
+	case *influxql.Distinct:
+		return c.compileDistinct(expr.NewCall())
 	case *influxql.BinaryExpr:
 		// Check if either side is a literal so we only compile one side if it is.
 		if _, ok := expr.LHS.(influxql.Literal); ok {
@@ -92,22 +92,37 @@ func (c *compiledStatement) compileFunction(expr *influxql.Call) (*OutputEdge, e
 		return nil, fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
 	}
 
-	// If we have count(), the argument may be a distinct() call.
+	// Generate the source of the function.
+	var input *OutputEdge
 	if expr.Name == "count" {
+		// If we have count(), the argument may be a distinct() call.
 		if arg0, ok := expr.Args[0].(*influxql.Call); ok && arg0.Name == "distinct" {
-			return nil, errors.New("unimplemented")
+			d, err := c.compileDistinct(arg0)
+			if err != nil {
+				return nil, err
+			}
+			input = d
+		} else if arg0, ok := expr.Args[0].(*influxql.Distinct); ok {
+			d, err := c.compileDistinct(arg0.NewCall())
+			if err != nil {
+				return nil, err
+			}
+			input = d
 		}
 	}
 
 	// Must be a variable reference.
-	arg0, ok := expr.Args[0].(*influxql.VarRef)
-	if !ok {
-		return nil, fmt.Errorf("expected field argument in %s()", expr.Name)
+	if input == nil {
+		arg0, ok := expr.Args[0].(*influxql.VarRef)
+		if !ok {
+			return nil, fmt.Errorf("expected field argument in %s()", expr.Name)
+		}
+		input = c.compileVarRef(arg0, nil)
 	}
 
 	// Retrieve the variable reference.
 	call := &FunctionCall{Name: expr.Name}
-	call.Input = c.compileVarRef(arg0, call)
+	call.Input, input.Node = input, call
 
 	// Mark down some meta properties related to the function for query validation.
 	switch expr.Name {
@@ -149,6 +164,27 @@ func (c *compiledStatement) linkAuxiliaryFields() error {
 		}
 	}
 	return nil
+}
+
+func (c *compiledStatement) compileDistinct(call *influxql.Call) (*OutputEdge, error) {
+	if len(call.Args) == 0 {
+		return nil, errors.New("distinct function requires at least one argument")
+	} else if len(call.Args) != 1 {
+		return nil, errors.New("distinct function can only have one argument")
+	}
+
+	arg0, ok := call.Args[0].(*influxql.VarRef)
+	if !ok {
+		return nil, errors.New("expected field argument in distinct()")
+	}
+
+	d := &Distinct{}
+	d.Input = c.compileVarRef(arg0, d)
+
+	var out *OutputEdge
+	d.Output, out = NewEdge(d)
+	c.FunctionCalls = append(c.FunctionCalls, out)
+	return out, nil
 }
 
 func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, node Node) *OutputEdge {
@@ -196,10 +232,10 @@ func Compile(stmt *influxql.SelectStatement) (CompiledStatement, error) {
 		c.OutputEdges = append(c.OutputEdges, out)
 	}
 
-	if err := c.linkAuxiliaryFields(); err != nil {
+	if err := c.validateFields(); err != nil {
 		return nil, err
 	}
-	if err := c.validateFields(); err != nil {
+	if err := c.linkAuxiliaryFields(); err != nil {
 		return nil, err
 	}
 	return c, nil

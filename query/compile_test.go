@@ -118,6 +118,21 @@ func TestCompile_Failures(t *testing.T) {
 			stmt: `SELECT count(distinct(value)), max(value) FROM cpu`,
 			err:  `aggregate function distinct() cannot be combined with other functions or fields`,
 		},
+		{
+			name: "CountDistinctNoArguments",
+			stmt: `SELECT count(distinct()) FROM cpu`,
+			err:  `distinct function requires at least one argument`,
+		},
+		{
+			name: "CountDistinctManyArguments",
+			stmt: `SELECT count(distinct(value, host)) FROM cpu`,
+			err:  `distinct function can only have one argument`,
+		},
+		{
+			name: "CountDistinctInvalidArgument",
+			stmt: `SELECT count(distinct(2)) FROM cpu`,
+			err:  `expected field argument in distinct()`,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt.stmt)

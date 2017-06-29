@@ -419,7 +419,10 @@ func (d *Distinct) Execute(plan *Plan) error {
 		return nil
 	}
 
-	opt := influxql.IteratorOptions{}
+	opt := influxql.IteratorOptions{
+		StartTime: influxql.MinTime,
+		EndTime:   influxql.MaxTime,
+	}
 	itr, err := influxql.NewDistinctIterator(d.Input.Iterator(), opt)
 	if err != nil {
 		return err
