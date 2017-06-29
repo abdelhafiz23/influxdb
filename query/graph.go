@@ -401,7 +401,32 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 	return nil
 }
 
-type Distinct struct{}
+type Distinct struct {
+	Input  *OutputEdge
+	Output *InputEdge
+}
+
+func (d *Distinct) Description() string {
+	return "find distinct values"
+}
+
+func (d *Distinct) Inputs() []*OutputEdge { return []*OutputEdge{d.Input} }
+func (d *Distinct) Outputs() []*InputEdge { return []*InputEdge{d.Output} }
+
+func (d *Distinct) Execute(plan *Plan) error {
+	if plan.DryRun {
+		d.Output.SetIterator(nil)
+		return nil
+	}
+
+	opt := influxql.IteratorOptions{}
+	itr, err := influxql.NewDistinctIterator(d.Input.Iterator(), opt)
+	if err != nil {
+		return err
+	}
+	d.Output.SetIterator(itr)
+	return nil
+}
 
 type AuxiliaryFields struct {
 	Aux     []influxql.VarRef
