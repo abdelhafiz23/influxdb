@@ -105,22 +105,9 @@ func (c *compiledStatement) compileFunction(expr *influxql.Call) (*OutputEdge, e
 		return nil, fmt.Errorf("expected field argument in %s()", expr.Name)
 	}
 
-	merge := &Merge{}
-	for _, source := range c.Sources {
-		switch source := source.(type) {
-		case *influxql.Measurement:
-			ic := &IteratorCreator{
-				Expr:            arg0,
-				AuxiliaryFields: &c.AuxiliaryFields,
-				Measurement:     source,
-			}
-			ic.Output = merge.AddInput(ic)
-		default:
-			panic("unimplemented")
-		}
-	}
+	// Retrieve the variable reference.
 	call := &FunctionCall{Name: expr.Name}
-	merge.Output, call.Input = AddEdge(merge, call)
+	call.Input = c.compileVarRef(arg0, call)
 
 	// Mark down some meta properties related to the function for query validation.
 	switch expr.Name {
@@ -158,23 +145,31 @@ func (c *compiledStatement) linkAuxiliaryFields() error {
 			c.AuxiliaryFields.Input, c.AuxiliaryFields.Output = c.FunctionCalls[0].Insert(c.AuxiliaryFields)
 		} else {
 			// Create a default IteratorCreator for this AuxiliaryFields.
-			merge := &Merge{}
-			for _, source := range c.Sources {
-				switch source := source.(type) {
-				case *influxql.Measurement:
-					ic := &IteratorCreator{
-						AuxiliaryFields: &c.AuxiliaryFields,
-						Measurement:     source,
-					}
-					ic.Output = merge.AddInput(ic)
-				default:
-					panic("unimplemented")
-				}
-			}
-			merge.Output, c.AuxiliaryFields.Input = AddEdge(merge, c.AuxiliaryFields)
+			c.AuxiliaryFields.Input = c.compileVarRef(nil, c.AuxiliaryFields)
 		}
 	}
 	return nil
+}
+
+func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, node Node) *OutputEdge {
+	merge := &Merge{}
+	for _, source := range c.Sources {
+		switch source := source.(type) {
+		case *influxql.Measurement:
+			ic := &IteratorCreator{
+				Expr:            ref,
+				AuxiliaryFields: &c.AuxiliaryFields,
+				Measurement:     source,
+			}
+			ic.Output = merge.AddInput(ic)
+		default:
+			panic("unimplemented")
+		}
+	}
+
+	var out *OutputEdge
+	merge.Output, out = AddEdge(merge, node)
+	return out
 }
 
 func (c *compiledStatement) validateFields() error {
