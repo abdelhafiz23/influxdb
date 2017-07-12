@@ -402,7 +402,7 @@ func (e *StatementExecutor) executeDropUserStatement(q *influxql.DropUserStateme
 }
 
 func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement, ctx *influxql.ExecutionContext) (models.Rows, error) {
-	c, err := query.Compile(q.Statement)
+	c, err := query.Compile(q.Statement, query.CompileOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -654,7 +654,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		}
 	}
 
-	c, err := query.Compile(stmt)
+	c, err := query.Compile(stmt, query.CompileOptions{})
 	if err != nil {
 		return nil, stmt, err
 	}
