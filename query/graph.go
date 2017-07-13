@@ -10,14 +10,14 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 )
 
-// InputEdge is the input end of an edge.
-type InputEdge struct {
+// WriteEdge is the end of the edge that is written to by the Node.
+type WriteEdge struct {
 	// Node is the node that creates an Iterator and sends it to this edge.
 	// This should always be set to a value.
 	Node Node
 
 	// Output is the output end of the edge. This should always be set.
-	Output *OutputEdge
+	Output *ReadEdge
 
 	itr   influxql.Iterator
 	ready bool
@@ -27,7 +27,7 @@ type InputEdge struct {
 // SetIterator marks this Edge as ready and sets the Iterator as the returned
 // iterator. If the Edge has already been set, this panics. The result can be
 // retrieved from the output edge.
-func (e *InputEdge) SetIterator(itr influxql.Iterator) {
+func (e *WriteEdge) SetIterator(itr influxql.Iterator) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -39,35 +39,35 @@ func (e *InputEdge) SetIterator(itr influxql.Iterator) {
 }
 
 // Insert splits the current edge and inserts a Node into the middle.
-// It then returns the newly created OutputEdge that points to the inserted
-// Node and the newly created InputEdge that the Node should use to send its
+// It then returns the newly created ReadEdge that points to the inserted
+// Node and the newly created WriteEdge that the Node should use to send its
 // results.
-func (e *InputEdge) Insert(n Node) (*OutputEdge, *InputEdge) {
-	// Create a new InputEdge. The output should be the old location this
-	// InputEdge pointed to.
-	in := &InputEdge{Node: n, Output: e.Output}
-	// Reset the OutputEdge so it points to the newly created input as its input.
+func (e *WriteEdge) Insert(n Node) (*ReadEdge, *WriteEdge) {
+	// Create a new WriteEdge. The output should be the old location this
+	// WriteEdge pointed to.
+	in := &WriteEdge{Node: n, Output: e.Output}
+	// Reset the ReadEdge so it points to the newly created input as its input.
 	e.Output.Input = in
-	// Redirect this InputEdge's output to a new output edge.
-	e.Output = &OutputEdge{Node: n, Input: e}
+	// Redirect this WriteEdge's output to a new output edge.
+	e.Output = &ReadEdge{Node: n, Input: e}
 	// Return the newly created edges so they can be stored with the newly
 	// inserted Node.
 	return e.Output, in
 }
 
-// OutputEdge is the output end of an edge.
-type OutputEdge struct {
+// ReadEdge is the end of the edge that reads from the Iterator.
+type ReadEdge struct {
 	// Node is the node that will read the Iterator from this edge.
 	// This may be nil if there is no Node that will read this edge.
 	Node Node
 
 	// Input is the input end of the edge. This should always be set.
-	Input *InputEdge
+	Input *WriteEdge
 }
 
-// Iterator returns the Iterator created for this Node by the InputEdge.
-// If the InputEdge is not ready, this function will panic.
-func (e *OutputEdge) Iterator() influxql.Iterator {
+// Iterator returns the Iterator created for this Node by the WriteEdge.
+// If the WriteEdge is not ready, this function will panic.
+func (e *ReadEdge) Iterator() influxql.Iterator {
 	e.Input.mu.RLock()
 	if !e.Input.ready {
 		e.Input.mu.RUnlock()
@@ -78,9 +78,9 @@ func (e *OutputEdge) Iterator() influxql.Iterator {
 	return itr
 }
 
-// Ready returns whether this OutputEdge is ready to be read from. This edge
-// will be ready after the attached InputEdge has called SetIterator().
-func (e *OutputEdge) Ready() (ready bool) {
+// Ready returns whether this ReadEdge is ready to be read from. This edge
+// will be ready after the attached WriteEdge has called SetIterator().
+func (e *ReadEdge) Ready() (ready bool) {
 	e.Input.mu.RLock()
 	ready = e.Input.ready
 	e.Input.mu.RUnlock()
@@ -88,17 +88,17 @@ func (e *OutputEdge) Ready() (ready bool) {
 }
 
 // Insert splits the current edge and inserts a Node into the middle.
-// It then returns the newly created OutputEdge that points to the inserted
-// Node and the newly created InputEdge that the Node should use to send its
+// It then returns the newly created ReadEdge that points to the inserted
+// Node and the newly created WriteEdge that the Node should use to send its
 // results.
-func (e *OutputEdge) Insert(n Node) (*OutputEdge, *InputEdge) {
-	// Create a new OutputEdge. The input should be the current InputEdge for
+func (e *ReadEdge) Insert(n Node) (*ReadEdge, *WriteEdge) {
+	// Create a new ReadEdge. The input should be the current WriteEdge for
 	// this node.
-	out := &OutputEdge{Node: n, Input: e.Input}
+	out := &ReadEdge{Node: n, Input: e.Input}
 	// Reset the Input so it points to the newly created output as its input.
 	e.Input.Output = out
-	// Redirect this OutputEdge's input to a new input edge.
-	e.Input = &InputEdge{Node: n, Output: e}
+	// Redirect this ReadEdge's input to a new input edge.
+	e.Input = &WriteEdge{Node: n, Output: e}
 	// Return the newly created edges so they can be stored with the newly
 	// inserted Node.
 	return out, e.Input
@@ -106,21 +106,21 @@ func (e *OutputEdge) Insert(n Node) (*OutputEdge, *InputEdge) {
 
 // Append sets the Node for the current output edge and then creates a new Edge
 // that points to nothing.
-func (e *OutputEdge) Append(out Node) (*InputEdge, *OutputEdge) {
+func (e *ReadEdge) Append(out Node) (*WriteEdge, *ReadEdge) {
 	e.Node = out
 	return NewEdge(out)
 }
 
 // NewEdge creates a new edge with the input node set to the argument and the
 // output node set to nothing.
-func NewEdge(in Node) (*InputEdge, *OutputEdge) {
+func NewEdge(in Node) (*WriteEdge, *ReadEdge) {
 	return AddEdge(in, nil)
 }
 
 // AddEdge creates a new edge between two nodes.
-func AddEdge(in, out Node) (*InputEdge, *OutputEdge) {
-	input := &InputEdge{Node: in}
-	output := &OutputEdge{Node: out}
+func AddEdge(in, out Node) (*WriteEdge, *ReadEdge) {
+	input := &WriteEdge{Node: in}
+	output := &ReadEdge{Node: out}
 	input.Output, output.Input = output, input
 	return input, output
 }
@@ -133,10 +133,10 @@ type Node interface {
 
 	// Inputs returns the Edges that produce Iterators that will be consumed by
 	// this Node.
-	Inputs() []*OutputEdge
+	Inputs() []*ReadEdge
 
 	// Outputs returns the Edges that will receive an Iterator from this Node.
-	Outputs() []*InputEdge
+	Outputs() []*WriteEdge
 
 	// Execute executes the Node and transmits the created Iterators to the
 	// output edges.
@@ -169,20 +169,20 @@ var _ Node = &Iterator{}
 // It has no outputs and may contain multiple (ordered) inputs.
 type Iterator struct {
 	Field      *influxql.Field
-	InputEdges []*OutputEdge
+	WriteEdges []*ReadEdge
 }
 
 func (i *Iterator) Description() string {
 	return i.Field.String()
 }
 
-func (i *Iterator) Inputs() []*OutputEdge    { return i.InputEdges }
-func (i *Iterator) Outputs() []*InputEdge    { return nil }
+func (i *Iterator) Inputs() []*ReadEdge      { return i.WriteEdges }
+func (i *Iterator) Outputs() []*WriteEdge    { return nil }
 func (i *Iterator) Execute(plan *Plan) error { return nil }
 
 func (i *Iterator) Iterators() []influxql.Iterator {
-	itrs := make([]influxql.Iterator, 0, len(i.InputEdges))
-	for _, input := range i.InputEdges {
+	itrs := make([]influxql.Iterator, 0, len(i.WriteEdges))
+	for _, input := range i.WriteEdges {
 		itrs = append(itrs, input.Iterator())
 	}
 	return itrs
@@ -194,17 +194,17 @@ type IteratorCreator struct {
 	Expr            influxql.Expr
 	AuxiliaryFields **AuxiliaryFields
 	Measurement     *influxql.Measurement
-	Output          *InputEdge
+	Output          *WriteEdge
 }
 
 func (ic *IteratorCreator) Description() string {
 	return fmt.Sprintf("create iterator for %s", ic.Measurement)
 }
 
-func (ic *IteratorCreator) Inputs() []*OutputEdge { return nil }
-func (ic *IteratorCreator) Outputs() []*InputEdge {
+func (ic *IteratorCreator) Inputs() []*ReadEdge { return nil }
+func (ic *IteratorCreator) Outputs() []*WriteEdge {
 	if ic.Output != nil {
-		return []*InputEdge{ic.Output}
+		return []*WriteEdge{ic.Output}
 	}
 	return nil
 }
@@ -257,15 +257,15 @@ type ShardIteratorCreator struct {
 	Aux     []influxql.VarRef
 	Ref     string
 	ShardID uint64
-	Output  *InputEdge
+	Output  *WriteEdge
 }
 
 func (sh *ShardIteratorCreator) Description() string {
 	return fmt.Sprintf("create iterator for %s [shard %d]", sh.Ref, sh.ShardID)
 }
 
-func (sh *ShardIteratorCreator) Inputs() []*OutputEdge { return nil }
-func (sh *ShardIteratorCreator) Outputs() []*InputEdge { return []*InputEdge{sh.Output} }
+func (sh *ShardIteratorCreator) Inputs() []*ReadEdge   { return nil }
+func (sh *ShardIteratorCreator) Outputs() []*WriteEdge { return []*WriteEdge{sh.Output} }
 
 func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -292,22 +292,22 @@ func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
 var _ Node = &Merge{}
 
 type Merge struct {
-	InputNodes []*OutputEdge
-	Output     *InputEdge
+	InputNodes []*ReadEdge
+	Output     *WriteEdge
 }
 
 func (m *Merge) Description() string {
 	return fmt.Sprintf("merge %d nodes", len(m.InputNodes))
 }
 
-func (m *Merge) AddInput(n Node) *InputEdge {
+func (m *Merge) AddInput(n Node) *WriteEdge {
 	in, out := AddEdge(n, m)
 	m.InputNodes = append(m.InputNodes, out)
 	return in
 }
 
-func (m *Merge) Inputs() []*OutputEdge { return m.InputNodes }
-func (m *Merge) Outputs() []*InputEdge { return []*InputEdge{m.Output} }
+func (m *Merge) Inputs() []*ReadEdge   { return m.InputNodes }
+func (m *Merge) Outputs() []*WriteEdge { return []*WriteEdge{m.Output} }
 
 func (m *Merge) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -368,16 +368,16 @@ var _ Node = &FunctionCall{}
 type FunctionCall struct {
 	Name   string
 	Arg    influxql.VarRef
-	Input  *OutputEdge
-	Output *InputEdge
+	Input  *ReadEdge
+	Output *WriteEdge
 }
 
 func (c *FunctionCall) Description() string {
 	return fmt.Sprintf("%s()", c.Name)
 }
 
-func (c *FunctionCall) Inputs() []*OutputEdge { return []*OutputEdge{c.Input} }
-func (c *FunctionCall) Outputs() []*InputEdge { return []*InputEdge{c.Output} }
+func (c *FunctionCall) Inputs() []*ReadEdge   { return []*ReadEdge{c.Input} }
+func (c *FunctionCall) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
 
 func (c *FunctionCall) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -403,16 +403,16 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 }
 
 type Distinct struct {
-	Input  *OutputEdge
-	Output *InputEdge
+	Input  *ReadEdge
+	Output *WriteEdge
 }
 
 func (d *Distinct) Description() string {
 	return "find distinct values"
 }
 
-func (d *Distinct) Inputs() []*OutputEdge { return []*OutputEdge{d.Input} }
-func (d *Distinct) Outputs() []*InputEdge { return []*InputEdge{d.Output} }
+func (d *Distinct) Inputs() []*ReadEdge   { return []*ReadEdge{d.Input} }
+func (d *Distinct) Outputs() []*WriteEdge { return []*WriteEdge{d.Output} }
 
 func (d *Distinct) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -435,8 +435,8 @@ func (d *Distinct) Execute(plan *Plan) error {
 type TopBottomSelector struct {
 	Dimensions []influxql.VarRef
 	Limit      int
-	Input      *OutputEdge
-	Output     *InputEdge
+	Input      *ReadEdge
+	Output     *WriteEdge
 }
 
 func (s *TopBottomSelector) Description() string {
@@ -447,8 +447,8 @@ func (s *TopBottomSelector) Description() string {
 	return fmt.Sprintf("top(%s, %d)", strings.Join(dims, ", "), s.Limit)
 }
 
-func (s *TopBottomSelector) Inputs() []*OutputEdge { return []*OutputEdge{s.Input} }
-func (s *TopBottomSelector) Outputs() []*InputEdge { return []*InputEdge{s.Output} }
+func (s *TopBottomSelector) Inputs() []*ReadEdge   { return []*ReadEdge{s.Input} }
+func (s *TopBottomSelector) Outputs() []*WriteEdge { return []*WriteEdge{s.Output} }
 
 func (s *TopBottomSelector) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -461,9 +461,9 @@ func (s *TopBottomSelector) Execute(plan *Plan) error {
 
 type AuxiliaryFields struct {
 	Aux     []influxql.VarRef
-	Input   *OutputEdge
-	Output  *InputEdge
-	outputs []*InputEdge
+	Input   *ReadEdge
+	Output  *WriteEdge
+	outputs []*WriteEdge
 	refs    []*influxql.VarRef
 }
 
@@ -471,10 +471,10 @@ func (c *AuxiliaryFields) Description() string {
 	return "access auxiliary fields"
 }
 
-func (c *AuxiliaryFields) Inputs() []*OutputEdge { return []*OutputEdge{c.Input} }
-func (c *AuxiliaryFields) Outputs() []*InputEdge {
+func (c *AuxiliaryFields) Inputs() []*ReadEdge { return []*ReadEdge{c.Input} }
+func (c *AuxiliaryFields) Outputs() []*WriteEdge {
 	if c.Output != nil {
-		outputs := make([]*InputEdge, 0, len(c.outputs)+1)
+		outputs := make([]*WriteEdge, 0, len(c.outputs)+1)
 		outputs = append(outputs, c.Output)
 		outputs = append(outputs, c.outputs...)
 		return outputs
@@ -509,9 +509,9 @@ func (c *AuxiliaryFields) Execute(plan *Plan) error {
 	return nil
 }
 
-// Iterator registers a new OutputEdge that registers the VarRef to be read and
-// sent to the OutputEdge.
-func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *OutputEdge {
+// Iterator registers a new ReadEdge that registers the VarRef to be read and
+// sent to the ReadEdge.
+func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *ReadEdge {
 	// Create the new edge.
 	in, out := NewEdge(c)
 	c.outputs = append(c.outputs, in)
@@ -535,8 +535,8 @@ func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *OutputEdge {
 var _ Node = &BinaryExpr{}
 
 type BinaryExpr struct {
-	LHS, RHS *OutputEdge
-	Output   *InputEdge
+	LHS, RHS *ReadEdge
+	Output   *WriteEdge
 	Op       influxql.Token
 	Desc     string
 }
@@ -545,8 +545,8 @@ func (c *BinaryExpr) Description() string {
 	return c.Desc
 }
 
-func (c *BinaryExpr) Inputs() []*OutputEdge { return []*OutputEdge{c.LHS, c.RHS} }
-func (c *BinaryExpr) Outputs() []*InputEdge { return []*InputEdge{c.Output} }
+func (c *BinaryExpr) Inputs() []*ReadEdge   { return []*ReadEdge{c.LHS, c.RHS} }
+func (c *BinaryExpr) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
 
 func (c *BinaryExpr) Execute(plan *Plan) error {
 	if plan.DryRun {
@@ -567,8 +567,8 @@ func (c *BinaryExpr) Execute(plan *Plan) error {
 var _ Node = &Limit{}
 
 type Limit struct {
-	Input  *OutputEdge
-	Output *InputEdge
+	Input  *ReadEdge
+	Output *WriteEdge
 
 	Limit  int
 	Offset int
@@ -585,8 +585,8 @@ func (c *Limit) Description() string {
 	return "limit 0/offset 0"
 }
 
-func (c *Limit) Inputs() []*OutputEdge { return []*OutputEdge{c.Input} }
-func (c *Limit) Outputs() []*InputEdge { return []*InputEdge{c.Output} }
+func (c *Limit) Inputs() []*ReadEdge   { return []*ReadEdge{c.Input} }
+func (c *Limit) Outputs() []*WriteEdge { return []*WriteEdge{c.Output} }
 
 func (c *Limit) Execute(plan *Plan) error {
 	if plan.DryRun {

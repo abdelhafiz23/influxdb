@@ -25,7 +25,7 @@ type compiledStatement struct {
 
 	// FunctionCalls holds a reference to the output edge of all of the
 	// function calls that have been instantiated.
-	FunctionCalls []*OutputEdge
+	FunctionCalls []*ReadEdge
 
 	// OnlySelectors is set to true when there are no aggregate functions.
 	OnlySelectors bool
@@ -42,14 +42,14 @@ type compiledStatement struct {
 
 	// OutputEdges holds the outermost edges that will be used to read from
 	// when returning results.
-	OutputEdges []*OutputEdge
+	OutputEdges []*ReadEdge
 
 	// Options holds the configured compiler options.
 	Options CompileOptions
 }
 
 type CompiledStatement interface {
-	Select(plan *Plan) ([]*OutputEdge, error)
+	Select(plan *Plan) ([]*ReadEdge, error)
 }
 
 func newCompiler(stmt *influxql.SelectStatement, opt CompileOptions) *compiledStatement {
@@ -58,12 +58,12 @@ func newCompiler(stmt *influxql.SelectStatement, opt CompileOptions) *compiledSt
 	}
 	return &compiledStatement{
 		OnlySelectors: true,
-		OutputEdges:   make([]*OutputEdge, 0, len(stmt.Fields)),
+		OutputEdges:   make([]*ReadEdge, 0, len(stmt.Fields)),
 		Options:       opt,
 	}
 }
 
-func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error) {
+func (c *compiledStatement) compileExpr(expr influxql.Expr) (*ReadEdge, error) {
 	switch expr := expr.(type) {
 	case *influxql.VarRef:
 		// If there is no instance of AuxiliaryFields, instantiate one now.
@@ -100,7 +100,7 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error)
 			node := &BinaryExpr{LHS: lhs, RHS: rhs, Op: expr.Op}
 			lhs.Node, rhs.Node = node, node
 
-			var out *OutputEdge
+			var out *ReadEdge
 			node.Output, out = NewEdge(node)
 			return out, nil
 		}
@@ -108,13 +108,13 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr) (*OutputEdge, error)
 	return nil, errors.New("unimplemented")
 }
 
-func (c *compiledStatement) compileFunction(expr *influxql.Call) (*OutputEdge, error) {
+func (c *compiledStatement) compileFunction(expr *influxql.Call) (*ReadEdge, error) {
 	if exp, got := 1, len(expr.Args); exp != got {
 		return nil, fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
 	}
 
 	// Generate the source of the function.
-	var input *OutputEdge
+	var input *ReadEdge
 	if expr.Name == "count" {
 		// If we have count(), the argument may be a distinct() call.
 		if arg0, ok := expr.Args[0].(*influxql.Call); ok && arg0.Name == "distinct" {
@@ -156,7 +156,7 @@ func (c *compiledStatement) compileFunction(expr *influxql.Call) (*OutputEdge, e
 		c.OnlySelectors = false
 	}
 
-	var out *OutputEdge
+	var out *ReadEdge
 	call.Output, out = NewEdge(call)
 	c.FunctionCalls = append(c.FunctionCalls, out)
 	return out, nil
@@ -187,7 +187,7 @@ func (c *compiledStatement) linkAuxiliaryFields() error {
 	return nil
 }
 
-func (c *compiledStatement) compileDistinct(call *influxql.Call) (*OutputEdge, error) {
+func (c *compiledStatement) compileDistinct(call *influxql.Call) (*ReadEdge, error) {
 	if len(call.Args) == 0 {
 		return nil, errors.New("distinct function requires at least one argument")
 	} else if len(call.Args) != 1 {
@@ -202,13 +202,13 @@ func (c *compiledStatement) compileDistinct(call *influxql.Call) (*OutputEdge, e
 	d := &Distinct{}
 	d.Input = c.compileVarRef(arg0, d)
 
-	var out *OutputEdge
+	var out *ReadEdge
 	d.Output, out = NewEdge(d)
 	c.FunctionCalls = append(c.FunctionCalls, out)
 	return out, nil
 }
 
-func (c *compiledStatement) compileTopBottom(call *influxql.Call) (*OutputEdge, error) {
+func (c *compiledStatement) compileTopBottom(call *influxql.Call) (*ReadEdge, error) {
 	if c.TopBottomFunction != "" {
 		return nil, fmt.Errorf("selector function %s() cannot be combined with other functions", c.TopBottomFunction)
 	}
@@ -245,13 +245,13 @@ func (c *compiledStatement) compileTopBottom(call *influxql.Call) (*OutputEdge, 
 	selector := &TopBottomSelector{Dimensions: dimensions}
 	selector.Input = c.compileVarRef(ref, selector)
 
-	var out *OutputEdge
+	var out *ReadEdge
 	selector.Output, out = NewEdge(selector)
 	c.FunctionCalls = append(c.FunctionCalls, out)
 	return out, nil
 }
 
-func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, node Node) *OutputEdge {
+func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, node Node) *ReadEdge {
 	merge := &Merge{}
 	for _, source := range c.Sources {
 		switch source := source.(type) {
@@ -267,7 +267,7 @@ func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, node Node) *Outp
 		}
 	}
 
-	var out *OutputEdge
+	var out *ReadEdge
 	merge.Output, out = AddEdge(merge, node)
 	return out
 }
@@ -355,7 +355,7 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 	return c, nil
 }
 
-func (c *compiledStatement) Select(plan *Plan) ([]*OutputEdge, error) {
+func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, error) {
 	for _, out := range c.OutputEdges {
 		plan.AddTarget(out)
 	}

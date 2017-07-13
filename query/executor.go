@@ -20,17 +20,17 @@ type Plan struct {
 	}
 
 	ready map[Node]struct{}
-	want  map[*OutputEdge]struct{}
+	want  map[*ReadEdge]struct{}
 }
 
 func NewPlan() *Plan {
 	return &Plan{
 		ready: make(map[Node]struct{}),
-		want:  make(map[*OutputEdge]struct{}),
+		want:  make(map[*ReadEdge]struct{}),
 	}
 }
 
-func (p *Plan) AddTarget(e *OutputEdge) {
+func (p *Plan) AddTarget(e *ReadEdge) {
 	if _, ok := p.want[e]; ok {
 		return
 	}
