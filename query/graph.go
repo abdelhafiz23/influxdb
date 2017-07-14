@@ -509,12 +509,11 @@ func (c *AuxiliaryFields) Execute(plan *Plan) error {
 	return nil
 }
 
-// Iterator registers a new ReadEdge that registers the VarRef to be read and
-// sent to the ReadEdge.
-func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *ReadEdge {
-	// Create the new edge.
-	in, out := NewEdge(c)
-	c.outputs = append(c.outputs, in)
+// Iterator registers an auxiliary field to be sent to the passed in WriteEdge
+// and configures that WriteEdge with the AuxiliaryFields as its Node.
+func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef, out *WriteEdge) {
+	out.Node = c
+	c.outputs = append(c.outputs, out)
 
 	// Attempt to find an existing variable that matches this one to avoid
 	// duplicating the same variable reference in the auxiliary fields.
@@ -522,14 +521,13 @@ func (c *AuxiliaryFields) Iterator(ref *influxql.VarRef) *ReadEdge {
 		v := &c.Aux[idx]
 		if *v == *ref {
 			c.refs = append(c.refs, v)
-			return out
+			return
 		}
 	}
 
 	// Register a new auxiliary field and take a reference to it.
 	c.Aux = append(c.Aux, *ref)
 	c.refs = append(c.refs, &c.Aux[len(c.Aux)-1])
-	return out
 }
 
 var _ Node = &BinaryExpr{}
