@@ -37,7 +37,7 @@ func (c *cloner) Clone(out *ReadEdge) *ReadEdge {
 	fmt.Println(len(c.Nodes))
 	fmt.Println(len(c.ReadEdges))
 	fmt.Println(len(c.WriteEdges))
-	return nil
+	return c.ReadEdges[out]
 }
 
 func (c *cloner) cloneNodes(n Node) {
@@ -45,9 +45,10 @@ func (c *cloner) cloneNodes(n Node) {
 		return
 	}
 
+	// Clone all of the nodes in the tree. Clone all of the edges, but leave
+	// the edges disconnected from their nodes until we are done cloning nodes.
 	unvisited := list.New()
 	unvisited.PushBack(n)
-
 	for unvisited.Len() > 0 {
 		e := unvisited.Front()
 		unvisited.Remove(e)
@@ -58,6 +59,19 @@ func (c *cloner) cloneNodes(n Node) {
 		}
 		v := reflect.ValueOf(node)
 		c.Nodes[node] = c.clone(v, unvisited).Interface().(Node)
+	}
+
+	// Connect the created edges to their appropriate node now that everything
+	// has been created.
+	for old, new := range c.ReadEdges {
+		if old.Node != nil {
+			new.Node = c.Nodes[old.Node]
+		}
+	}
+	for old, new := range c.WriteEdges {
+		if old.Node != nil {
+			new.Node = c.Nodes[old.Node]
+		}
 	}
 }
 
@@ -74,18 +88,45 @@ func (c *cloner) clone(v reflect.Value, unvisited *list.List) reflect.Value {
 		// If the struct is a read or write edge, instantiate a zero version
 		// and then record their memory locations.
 		if typ := v.Type(); typ.AssignableTo(reflect.TypeOf(ReadEdge{})) {
-			// Retrieve the node from this read edge.
 			other := v.Addr().Interface().(*ReadEdge)
-			if other.Input != nil && other.Input.Node != nil {
-				unvisited.PushBack(other.Input.Node)
+			// Check if this read edge already exists.
+			if clone, ok := c.ReadEdges[other]; ok {
+				return reflect.ValueOf(clone).Elem()
 			}
-			edge := &ReadEdge{}
-			c.ReadEdges[v.Addr().Interface().(*ReadEdge)] = edge
-			return reflect.ValueOf(edge).Elem()
+
+			// Create a new one.
+			clone := &ReadEdge{}
+			c.ReadEdges[other] = clone
+			if other.Node != nil {
+				unvisited.PushBack(other.Node)
+			}
+
+			// Clone the corresponding write edge.
+			if other.Input != nil {
+				input := c.clone(reflect.ValueOf(other.Input), unvisited)
+				clone.Input = input.Interface().(*WriteEdge)
+			}
+			return reflect.ValueOf(clone).Elem()
 		} else if typ.AssignableTo(reflect.TypeOf(WriteEdge{})) {
-			edge := &WriteEdge{}
-			c.WriteEdges[v.Addr().Interface().(*WriteEdge)] = edge
-			return reflect.ValueOf(edge).Elem()
+			other := v.Addr().Interface().(*WriteEdge)
+			// Check if this write edge already exists.
+			if clone, ok := c.WriteEdges[other]; ok {
+				return reflect.ValueOf(clone).Elem()
+			}
+
+			// Create a new one.
+			clone := &WriteEdge{}
+			c.WriteEdges[other] = clone
+			if other.Node != nil {
+				unvisited.PushBack(other.Node)
+			}
+
+			// Clone the corresponding write edge.
+			if other.Output != nil {
+				output := c.clone(reflect.ValueOf(other.Output), unvisited)
+				clone.Output = output.Interface().(*ReadEdge)
+			}
+			return reflect.ValueOf(clone).Elem()
 		}
 
 		// Iterate through all of the fields in the original node and clone them.

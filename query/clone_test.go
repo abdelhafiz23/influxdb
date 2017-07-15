@@ -3,6 +3,7 @@ package query_test
 import (
 	"testing"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/influxdata/influxdb/query"
 )
 
@@ -20,5 +21,6 @@ func TestClone(t *testing.T) {
 	var out *query.ReadEdge
 	sum.Output, out = query.NewEdge(sum)
 
-	query.Clone(out)
+	newOut := query.Clone(out)
+	spew.Dump(newOut)
 }
