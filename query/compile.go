@@ -3,11 +3,30 @@ package query
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/influxdata/influxdb/influxql"
 )
+
+// stuff that needs to be known globally
+// global state, which is changed by each field that gets compiled.
+// global constants or configuration which never changes. might not be worth separating those.
+// a list of the function calls that happen.
+// whether or not auxiliary fields are needed.
+
+// the final field that is constructed after linking
+type Field struct {
+	Name string // the resolved name of the field
+}
+
+// we have the compiled fields. they share some of the global compilation state.
+// each field will have a graph that is completely separate from the rest of the graph. shares no state. but each field inserts pointers into the fields graph so that the global state can access them. fields write to global state. fields do not look at the state of other compiled fields.
+// if there is no wildcard, then the field is only one.
+// if there is a wildcard, we need to find the possible fields that can be substituted.
+// need to resolve cloning a graph...
+// we do not have auxiliary fields in this graph so it should be possible to clone the graph.
 
 type CompileOptions struct {
 	Now time.Time
@@ -34,15 +53,14 @@ type compiledStatement struct {
 	// used in the statement.
 	TopBottomFunction string
 
-	// AuxFields holds a mapping to the auxiliary fields that need to be
+	// AuxiliaryFields holds a mapping to the auxiliary fields that need to be
 	// selected. This maps the raw VarRef to a pointer to a shared VarRef. The
 	// pointer is used for instantiating references to the shared variable so
 	// type mapping gets shared.
 	AuxiliaryFields *AuxiliaryFields
 
-	// OutputEdges holds the outermost edges that will be used to read from
-	// when returning results.
-	OutputEdges []*ReadEdge
+	// Fields holds all of the compiled fields that will be used.
+	Fields []*compiledField
 
 	// Options holds the configured compiler options.
 	Options CompileOptions
@@ -58,21 +76,53 @@ func newCompiler(stmt *influxql.SelectStatement, opt CompileOptions) *compiledSt
 	}
 	return &compiledStatement{
 		OnlySelectors: true,
-		OutputEdges:   make([]*ReadEdge, 0, len(stmt.Fields)),
+		Fields:        make([]*compiledField, 0, len(stmt.Fields)),
 		Options:       opt,
 	}
 }
 
+// Wildcard represents a wildcard within a field.
+type wildcard struct {
+	// NameFilters are the regexp filters for selecting fields. If this is
+	// nil, no fields are filtered because of their name.
+	NameFilters []*regexp.Regexp
+
+	// TypeFilters holds a list of all of the types forbidden to be used
+	// because of a function.
+	TypeFilters map[influxql.DataType]struct{}
+}
+
+// compiledField holds the compilation state for a field.
+type compiledField struct {
+	// This holds the global state from the compiled statement.
+	global *compiledStatement
+
+	// Field contains the original field associated with this field.
+	Field *influxql.Field
+
+	// Output contains the output edge for this field.
+	Output *ReadEdge
+
+	// Symbols contains a list of all of the unresolved symbols within this
+	// field.
+	Symbols []interface{}
+
+	// Wildcard contains the wildcard expression to be used when resolving
+	// wildcards.
+	Wildcard *wildcard
+}
+
 // compileExpr creates the node that executes the expression and connects that
 // node to the WriteEdge as the output.
-func (c *compiledStatement) compileExpr(expr influxql.Expr, out *WriteEdge) error {
+func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 	switch expr := expr.(type) {
 	case *influxql.VarRef:
 		// If there is no instance of AuxiliaryFields, instantiate one now.
-		if c.AuxiliaryFields == nil {
-			c.AuxiliaryFields = &AuxiliaryFields{}
+		if c.global.AuxiliaryFields == nil {
+			c.global.AuxiliaryFields = &AuxiliaryFields{}
 		}
-		c.AuxiliaryFields.Iterator(expr, out)
+		// Add a symbol that resolves to this write edge.
+		// TODO(jsternberg): Add symbol resolution.
 		return nil
 	case *influxql.Call:
 		switch expr.Name {
@@ -115,14 +165,14 @@ func (c *compiledStatement) compileExpr(expr influxql.Expr, out *WriteEdge) erro
 	return errors.New("unimplemented")
 }
 
-func (c *compiledStatement) compileFunction(expr *influxql.Call, out *WriteEdge) error {
+func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) error {
 	if exp, got := 1, len(expr.Args); exp != got {
 		return fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", expr.Name, exp, got)
 	}
 
 	// Create the function call and send its output to the write edge.
 	call := &FunctionCall{Name: expr.Name, Output: out}
-	c.FunctionCalls = append(c.FunctionCalls, out.Output)
+	c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	out.Node = call
 	out, call.Input = AddEdge(nil, call)
 
@@ -131,7 +181,7 @@ func (c *compiledStatement) compileFunction(expr *influxql.Call, out *WriteEdge)
 	case "max", "min", "first", "last", "percentile", "sample":
 		// top/bottom are not included here since they are not typical functions.
 	default:
-		c.OnlySelectors = false
+		c.global.OnlySelectors = false
 	}
 
 	// If this is a call to count(), allow distinct() to be used as the function argument.
@@ -149,7 +199,7 @@ func (c *compiledStatement) compileFunction(expr *influxql.Call, out *WriteEdge)
 	if !ok {
 		return fmt.Errorf("expected field argument in %s()", expr.Name)
 	}
-	return c.compileVarRef(arg0, out)
+	return c.global.compileVarRef(arg0, out)
 }
 
 func (c *compiledStatement) linkAuxiliaryFields() error {
@@ -181,7 +231,7 @@ func (c *compiledStatement) linkAuxiliaryFields() error {
 	return nil
 }
 
-func (c *compiledStatement) compileDistinct(call *influxql.Call, out *WriteEdge, nested bool) error {
+func (c *compiledField) compileDistinct(call *influxql.Call, out *WriteEdge, nested bool) error {
 	if len(call.Args) == 0 {
 		return errors.New("distinct function requires at least one argument")
 	} else if len(call.Args) != 1 {
@@ -197,18 +247,18 @@ func (c *compiledStatement) compileDistinct(call *influxql.Call, out *WriteEdge,
 	d := &Distinct{Output: out}
 	if !nested {
 		// Add as a function call if this is not nested.
-		c.FunctionCalls = append(c.FunctionCalls, out.Output)
+		c.global.FunctionCalls = append(c.global.FunctionCalls, out.Output)
 	}
 	out.Node = d
 	out, d.Input = AddEdge(nil, d)
 
 	// Add the variable reference to the graph to complete the graph.
-	return c.compileVarRef(arg0, out)
+	return c.global.compileVarRef(arg0, out)
 }
 
-func (c *compiledStatement) compileTopBottom(call *influxql.Call, out *WriteEdge) error {
-	if c.TopBottomFunction != "" {
-		return fmt.Errorf("selector function %s() cannot be combined with other functions", c.TopBottomFunction)
+func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) error {
+	if c.global.TopBottomFunction != "" {
+		return fmt.Errorf("selector function %s() cannot be combined with other functions", c.global.TopBottomFunction)
 	}
 
 	if exp, got := 2, len(call.Args); got < exp {
@@ -238,13 +288,13 @@ func (c *compiledStatement) compileTopBottom(call *influxql.Call, out *WriteEdge
 	} else if limit.Val <= 0 {
 		return fmt.Errorf("limit (%d) in %s function must be at least 1", limit.Val, call.Name)
 	}
-	c.TopBottomFunction = call.Name
+	c.global.TopBottomFunction = call.Name
 
 	selector := &TopBottomSelector{Dimensions: dimensions, Output: out}
 	out.Node = selector
 
 	out, selector.Input = AddEdge(nil, selector)
-	return c.compileVarRef(ref, out)
+	return c.global.compileVarRef(ref, out)
 }
 
 func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, out *WriteEdge) error {
@@ -334,10 +384,11 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 		}
 
 		in, out := NewEdge(nil)
-		if err := c.compileExpr(f.Expr, in); err != nil {
+		field := &compiledField{Field: f, Output: out}
+		if err := field.compileExpr(f.Expr, in); err != nil {
 			return nil, err
 		}
-		c.OutputEdges = append(c.OutputEdges, out)
+		c.Fields = append(c.Fields, field)
 	}
 
 	if err := c.validateFields(); err != nil {
@@ -350,8 +401,10 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 }
 
 func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, error) {
-	for _, out := range c.OutputEdges {
-		plan.AddTarget(out)
+	out := make([]*ReadEdge, 0, len(c.Fields))
+	for _, f := range c.Fields {
+		plan.AddTarget(f.Output)
+		out = append(out, f.Output)
 	}
-	return c.OutputEdges, nil
+	return out, nil
 }
