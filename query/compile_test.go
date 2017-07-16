@@ -228,6 +228,16 @@ func TestCompile_Failures(t *testing.T) {
 			stmt: `SELECT bottom(value, -1) FROM cpu`,
 			err:  `limit (-1) in bottom function must be at least 1`,
 		},
+		{
+			name: "TimeConditionWithOr",
+			stmt: `SELECT value FROM cpu WHERE time >= now() - 10m OR time < now() - 5m`,
+			err:  `cannot use OR with time conditions`,
+		},
+		{
+			name: "InvalidConditionStatement",
+			stmt: `SELECT value FROM cpu WHERE value`,
+			err:  `invalid condition expression: value`,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt.stmt)
