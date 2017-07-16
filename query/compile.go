@@ -96,9 +96,8 @@ type compiledField struct {
 	// Output contains the output edge for this field.
 	Output *ReadEdge
 
-	// Symbols contains a list of all of the unresolved symbols within this
-	// field.
-	Symbols []interface{}
+	// Symbols contains the symbol table for this field.
+	Symbols *SymbolTable
 
 	// Wildcard contains the wildcard expression to be used when resolving
 	// wildcards.

@@ -4,11 +4,34 @@ import (
 	"container/list"
 	"fmt"
 	"reflect"
+
+	"github.com/influxdata/influxdb/influxql"
 )
 
-func Clone(out *ReadEdge) *ReadEdge {
+func (c *compiledField) Clone() *compiledField {
+	// Clone the graph.
 	cloner := newCloner()
-	return cloner.Clone(out)
+	output := cloner.Clone(c.Output)
+
+	// Duplicate the symbol table to the new write edges.
+	// A shallow copy of the symbols should work since they should all be stateless.
+	table := &SymbolTable{
+		Table: make(map[*WriteEdge]Symbol, len(c.Symbols.Table)),
+	}
+	for edge, symbol := range c.Symbols.Table {
+		table.Table[cloner.WriteEdges[edge]] = symbol
+	}
+
+	// Clone the field so we can modify its attributes with a new name.
+	field := *c.Field
+	field.Expr = influxql.CloneExpr(field.Expr)
+	clone := &compiledField{
+		global:  c.global,
+		Field:   &field,
+		Output:  output,
+		Symbols: table,
+	}
+	return clone
 }
 
 // cloner contains the state used when cloning a graph.
