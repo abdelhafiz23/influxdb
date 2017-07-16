@@ -50,6 +50,9 @@ type compiledStatement struct {
 	// OnlySelectors is set to true when there are no aggregate functions.
 	OnlySelectors bool
 
+	// HasDistinct is set when the distinct() function is encountered.
+	HasDistinct bool
+
 	// TopBottomFunction is set to top or bottom when one of those functions are
 	// used in the statement.
 	TopBottomFunction string
@@ -224,45 +227,29 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 	}
 }
 
-func (c *compiledStatement) linkAuxiliaryFields() error {
-	if c.AuxiliaryFields == nil {
-		if len(c.FunctionCalls) == 0 {
-			return errors.New("at least 1 non-time field must be queried")
-		}
-		return nil
-	}
+func (c *compiledStatement) linkAuxiliaryFields() {
+	if len(c.FunctionCalls) == 0 {
+		// Create a default IteratorCreator for this AuxiliaryFields.
+		var out *WriteEdge
+		out, c.AuxiliaryFields.Input = AddEdge(nil, c.AuxiliaryFields)
 
-	if c.AuxiliaryFields != nil {
-		if !c.OnlySelectors {
-			return fmt.Errorf("mixing aggregate and non-aggregate queries is not supported")
-		} else if len(c.FunctionCalls) > 1 {
-			return fmt.Errorf("mixing multiple selector functions with tags or fields is not supported")
-		}
-
-		if len(c.FunctionCalls) == 1 {
-			c.AuxiliaryFields.Input, c.AuxiliaryFields.Output = c.FunctionCalls[0].Insert(c.AuxiliaryFields)
-		} else {
-			// Create a default IteratorCreator for this AuxiliaryFields.
-			var out *WriteEdge
-			out, c.AuxiliaryFields.Input = AddEdge(nil, c.AuxiliaryFields)
-
-			merge := &Merge{Output: out}
-			for _, source := range c.Sources {
-				switch source := source.(type) {
-				case *influxql.Measurement:
-					ic := &IteratorCreator{
-						AuxiliaryFields: c.AuxiliaryFields,
-						Measurement:     source,
-					}
-					ic.Output = merge.AddInput(ic)
-				default:
-					panic("unimplemented")
+		merge := &Merge{Output: out}
+		for _, source := range c.Sources {
+			switch source := source.(type) {
+			case *influxql.Measurement:
+				ic := &IteratorCreator{
+					AuxiliaryFields: c.AuxiliaryFields,
+					Measurement:     source,
 				}
+				ic.Output = merge.AddInput(ic)
+			default:
+				panic("unimplemented")
 			}
-			out.Node = merge
 		}
+		out.Node = merge
+	} else {
+		c.AuxiliaryFields.Input, c.AuxiliaryFields.Output = c.FunctionCalls[0].Insert(c.AuxiliaryFields)
 	}
-	return nil
 }
 
 func (c *compiledField) compileDistinct(call *influxql.Call, out *WriteEdge, nested bool) error {
@@ -285,6 +272,7 @@ func (c *compiledField) compileDistinct(call *influxql.Call, out *WriteEdge, nes
 	}
 	out.Node = d
 	out, d.Input = AddEdge(nil, d)
+	c.global.HasDistinct = true
 
 	// Add the variable reference to the graph to complete the graph.
 	return c.compileVarRef(arg0, out)
@@ -355,6 +343,12 @@ func (c *compiledField) wildcardFunction(name string) {
 	case "min", "max":
 		// No restrictions.
 	}
+
+	// Do not allow selectors when we are using a wildcard.
+	// While it is physically possible to only choose one value,
+	// it is better to just pre-emptively stop this uncommon situation
+	// from happening to begin with.
+	c.global.OnlySelectors = false
 }
 
 func (c *compiledField) resolveSymbols(m ShardGroup) {
@@ -373,10 +367,28 @@ func (c *compiledField) compileVarRef(ref *influxql.VarRef, out *WriteEdge) erro
 	return nil
 }
 
+// validateFields validates that the fields are mutually compatible with each other.
+// This runs at the end of compilation but before linking.
 func (c *compiledStatement) validateFields() error {
+	// Validate that at least one field has been selected.
+	if len(c.Fields) == 0 {
+		return errors.New("at least 1 non-time field must be queried")
+	}
 	// Ensure there are not multiple calls if top/bottom is present.
 	if len(c.FunctionCalls) > 1 && c.TopBottomFunction != "" {
 		return fmt.Errorf("selector function %s() cannot be combined with other functions", c.TopBottomFunction)
+	}
+	// If a distinct() call is present, ensure there is exactly one function.
+	if c.HasDistinct && len(c.FunctionCalls) != 1 {
+		return errors.New("aggregate function distinct() cannot be combined with other functions or fields")
+	}
+	// Validate we are using a selector or raw query if auxiliary fields are required.
+	if c.AuxiliaryFields != nil {
+		if !c.OnlySelectors {
+			return fmt.Errorf("mixing aggregate and non-aggregate queries is not supported")
+		} else if len(c.FunctionCalls) > 1 {
+			return fmt.Errorf("mixing multiple selector functions with tags or fields is not supported")
+		}
 	}
 	return nil
 }
@@ -387,7 +399,7 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 	c.Sources = append(c.Sources, stmt.Sources...)
 
 	// Retrieve the condition expression and the time range.
-	valuer := influxql.NowValuer{Now: opt.Now}
+	valuer := influxql.NowValuer{Now: c.Options.Now}
 	if cond, timeRange, err := ParseCondition(stmt.Condition, &valuer); err != nil {
 		return nil, err
 	} else {
@@ -664,10 +676,7 @@ func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, error) {
 		}
 		fields = append(fields, outputs...)
 	}
-
-	if err := c.linkAuxiliaryFields(); err != nil {
-		return nil, err
-	}
+	c.linkAuxiliaryFields()
 
 	out := make([]*ReadEdge, 0, len(fields))
 	for _, f := range fields {

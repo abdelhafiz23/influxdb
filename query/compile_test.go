@@ -239,6 +239,26 @@ func TestCompile_Failures(t *testing.T) {
 			stmt: `SELECT value FROM cpu WHERE value`,
 			err:  `invalid condition expression: value`,
 		},
+		{
+			name: "WildcardWithAggregate",
+			stmt: `SELECT count(value), * FROM cpu`,
+			err:  `mixing aggregate and non-aggregate queries is not supported`,
+		},
+		{
+			name: "WildcardSelectorWithRawFields",
+			stmt: `SELECT max(*), host FROM cpu`,
+			err:  `mixing aggregate and non-aggregate queries is not supported`,
+		},
+		{
+			name: "RegexpWithAggregate",
+			stmt: `SELECT count(value), /ho/ FROM cpu`,
+			err:  `mixing aggregate and non-aggregate queries is not supported`,
+		},
+		{
+			name: "RegexpSelectorWithRawFields",
+			stmt: `SELECT max(/val/), * FROM cpu`,
+			err:  `mixing aggregate and non-aggregate queries is not supported`,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt.stmt)
