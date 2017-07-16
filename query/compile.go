@@ -151,7 +151,7 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 		case "top", "bottom":
 			return c.compileTopBottom(expr, out)
 		default:
-			return errors.New("unimplemented")
+			return fmt.Errorf("undefined function %s()", expr.Name)
 		}
 	case *influxql.Distinct:
 		return c.compileDistinct(expr.NewCall(), out, false)

@@ -259,6 +259,11 @@ func TestCompile_Failures(t *testing.T) {
 			stmt: `SELECT max(/val/), * FROM cpu`,
 			err:  `mixing aggregate and non-aggregate queries is not supported`,
 		},
+		{
+			name: "UndefinedFunctionCall",
+			stmt: `SELECT a(value) FROM cpu`,
+			err:  `undefined function a()`,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt, err := influxql.ParseStatement(tt.stmt)
