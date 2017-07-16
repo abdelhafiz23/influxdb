@@ -372,7 +372,8 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 	c.Sources = append(c.Sources, stmt.Sources...)
 
 	// Retrieve the condition expression and the time range.
-	if cond, timeRange, err := c.getCondition(stmt.Condition); err != nil {
+	valuer := influxql.NowValuer{Now: opt.Now}
+	if cond, timeRange, err := ParseCondition(stmt.Condition, &valuer); err != nil {
 		return nil, err
 	} else {
 		c.Condition = cond
@@ -496,11 +497,11 @@ func (t *TimeRange) Intersect(other *TimeRange) *TimeRange {
 	return t
 }
 
-// getCondition extracts the time range and the condition from an expression.
+// ParseCondition extracts the time range and the condition from an expression.
 // We only support simple time ranges that are constrained with AND and are not nested.
 // This throws an error when we encounter a time condition that is combined with OR
 // to prevent returning unexpected results that we do not support.
-func (c *compiledStatement) getCondition(cond influxql.Expr) (influxql.Expr, *TimeRange, error) {
+func ParseCondition(cond influxql.Expr, valuer influxql.Valuer) (influxql.Expr, *TimeRange, error) {
 	if cond == nil {
 		return nil, nil, nil
 	}
@@ -508,12 +509,12 @@ func (c *compiledStatement) getCondition(cond influxql.Expr) (influxql.Expr, *Ti
 	switch cond := cond.(type) {
 	case *influxql.BinaryExpr:
 		if cond.Op == influxql.AND || cond.Op == influxql.OR {
-			lhsExpr, lhsTime, err := c.getCondition(cond.LHS)
+			lhsExpr, lhsTime, err := ParseCondition(cond.LHS, valuer)
 			if err != nil {
 				return nil, nil, err
 			}
 
-			rhsExpr, rhsTime, err := c.getCondition(cond.RHS)
+			rhsExpr, rhsTime, err := ParseCondition(cond.RHS, valuer)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -541,7 +542,7 @@ func (c *compiledStatement) getCondition(cond influxql.Expr) (influxql.Expr, *Ti
 		// If either the left or the right side is "time", we are looking at
 		// a time range.
 		if lhs, ok := cond.LHS.(*influxql.VarRef); ok && lhs.Val == "time" {
-			timeRange, err := c.getTimeRange(cond.Op, cond.RHS)
+			timeRange, err := getTimeRange(cond.Op, cond.RHS, valuer)
 			return nil, timeRange, err
 		} else if rhs, ok := cond.RHS.(*influxql.VarRef); ok && rhs.Val == "time" {
 			// Swap the op for the opposite if it is a comparison.
@@ -556,12 +557,12 @@ func (c *compiledStatement) getCondition(cond influxql.Expr) (influxql.Expr, *Ti
 			case influxql.LTE:
 				op = influxql.GTE
 			}
-			timeRange, err := c.getTimeRange(op, cond.LHS)
+			timeRange, err := getTimeRange(op, cond.LHS, valuer)
 			return nil, timeRange, err
 		}
 		return cond, nil, nil
 	case *influxql.ParenExpr:
-		return c.getCondition(cond.Expr)
+		return ParseCondition(cond.Expr, valuer)
 	default:
 		return nil, nil, fmt.Errorf("invalid condition expression: %s", cond)
 	}
@@ -570,7 +571,7 @@ func (c *compiledStatement) getCondition(cond influxql.Expr) (influxql.Expr, *Ti
 // getTimeRange returns the time range associated with this comparison.
 // op is the operation that is used for comparison and rhs is the right hand side
 // of the expression. The left hand side is always assumed to be "time".
-func (c *compiledStatement) getTimeRange(op influxql.Token, rhs influxql.Expr) (*TimeRange, error) {
+func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) (*TimeRange, error) {
 	// If literal looks like a date time then parse it as a time literal.
 	if strlit, ok := rhs.(*influxql.StringLiteral); ok {
 		if strlit.IsTimeLiteral() {
@@ -583,8 +584,7 @@ func (c *compiledStatement) getTimeRange(op influxql.Token, rhs influxql.Expr) (
 	}
 
 	// Evaluate the RHS to replace "now()" with the current time.
-	nowValuer := influxql.NowValuer{Now: c.Options.Now}
-	rhs = influxql.Reduce(rhs, &nowValuer)
+	rhs = influxql.Reduce(rhs, valuer)
 
 	var value time.Time
 	switch lit := rhs.(type) {

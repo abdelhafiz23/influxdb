@@ -2,6 +2,7 @@ package query_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/influxdata/influxdb/influxql"
 	"github.com/influxdata/influxdb/query"
@@ -251,6 +252,119 @@ func TestCompile_Failures(t *testing.T) {
 				t.Error("expected error")
 			} else if have, want := err.Error(), tt.err; have != want {
 				t.Errorf("unexpected error: %s != %s", have, want)
+			}
+		})
+	}
+}
+
+func TestCompile_ParseCondition(t *testing.T) {
+	mustParseTime := func(value string) time.Time {
+		ts, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			t.Fatalf("unable to parse time: %s", err)
+		}
+		return ts
+	}
+
+	// Set the now() time to the beginning of 2017.
+	now := mustParseTime("2017-01-01T00:00:00Z")
+	for _, tt := range []struct {
+		cond     string
+		min, max time.Time
+		exp      string
+		err      string
+	}{
+		{
+			cond: `time >= now()`,
+			min:  now,
+		},
+		{
+			cond: `time < now()`,
+			max:  now.Add(-time.Nanosecond),
+		},
+		{
+			cond: `time >= now() OR host = 'server01'`,
+			err:  "cannot use OR with time conditions",
+		},
+		{
+			cond: `time >= now() AND host = 'server01'`,
+			exp:  `host = 'server01'`,
+			min:  now,
+		},
+		{
+			cond: `value`,
+			err:  "invalid condition expression: value",
+		},
+		{
+			cond: `4`,
+			err:  "invalid condition expression: 4",
+		},
+		{
+			cond: `time >= 'today'`,
+			err:  "invalid operation: time and *influxql.StringLiteral are not compatible",
+		},
+		{
+			cond: `time != now()`,
+			err:  "invalid time comparison operator: !=",
+		},
+		{
+			cond: `now() <= time`,
+			min:  now,
+		},
+		{
+			cond: `time >= now() AND (host = 'server01' OR host = 'server02')`,
+			min:  now,
+			exp:  `host = 'server01' OR host = 'server02'`,
+		},
+		{
+			cond: `host = 'server01' OR (time >= now() AND host = 'server02')`,
+			err:  "cannot use OR with time conditions",
+		},
+		{
+			cond: `host = 'server01' AND (time >= now() AND host = 'server02')`,
+			min:  now,
+			exp:  `host = 'server01' AND host = 'server02'`,
+		},
+	} {
+		t.Run(tt.cond, func(t *testing.T) {
+			valuer := influxql.NowValuer{Now: now}
+			expr, err := influxql.ParseExpr(tt.cond)
+			if err != nil {
+				t.Fatalf("unable to parse expression: %s", err)
+			}
+
+			cond, tr, err := query.ParseCondition(expr, &valuer)
+			if err != nil {
+				if tt.err == "" {
+					t.Fatalf("unexpected error: %s", err)
+				} else if have, want := err.Error(), tt.err; have != want {
+					t.Fatalf("unexpected error: %s != %s", have, want)
+				}
+				return
+			}
+
+			if cond != nil {
+				if have, want := cond.String(), tt.exp; have != want {
+					t.Errorf("unexpected condition: %s != %s", have, want)
+				}
+			} else if have, want := "", tt.exp; have != want {
+				t.Errorf("unexpected condition: %s != %s", have, want)
+			}
+
+			if tr != nil {
+				if !tr.Min.Equal(tt.min) {
+					t.Errorf("unexpected min time: %s != %s", tr.Min, tt.min)
+				}
+				if !tr.Max.Equal(tt.max) {
+					t.Errorf("unexpected max time: %s != %s", tr.Max, tt.max)
+				}
+			} else {
+				if !tt.min.IsZero() {
+					t.Errorf("unexpected min time: %s != %s", time.Time{}, tt.min)
+				}
+				if !tt.max.IsZero() {
+					t.Errorf("unexpected max time: %s != %s", time.Time{}, tt.max)
+				}
 			}
 		})
 	}
