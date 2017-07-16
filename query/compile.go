@@ -21,13 +21,6 @@ type Field struct {
 	Name string // the resolved name of the field
 }
 
-// we have the compiled fields. they share some of the global compilation state.
-// each field will have a graph that is completely separate from the rest of the graph. shares no state. but each field inserts pointers into the fields graph so that the global state can access them. fields write to global state. fields do not look at the state of other compiled fields.
-// if there is no wildcard, then the field is only one.
-// if there is a wildcard, we need to find the possible fields that can be substituted.
-// need to resolve cloning a graph...
-// we do not have auxiliary fields in this graph so it should be possible to clone the graph.
-
 type CompileOptions struct {
 	Now time.Time
 }
@@ -117,13 +110,19 @@ type compiledField struct {
 func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 	switch expr := expr.(type) {
 	case *influxql.VarRef:
-		// If there is no instance of AuxiliaryFields, instantiate one now.
-		if c.global.AuxiliaryFields == nil {
-			c.global.AuxiliaryFields = &AuxiliaryFields{}
-		}
+		// A bare variable reference will require auxiliary fields.
+		c.global.requireAuxiliaryFields()
 		// Add a symbol that resolves to this write edge.
 		// TODO(jsternberg): Add symbol resolution.
 		return nil
+	case *influxql.Wildcard:
+		// Wildcards use auxiliary fields. We assume there will be at least one
+		// expansion.
+		c.global.requireAuxiliaryFields()
+		c.wildcard()
+	case *influxql.RegexLiteral:
+		c.global.requireAuxiliaryFields()
+		c.wildcardFilter(expr.Val)
 	case *influxql.Call:
 		switch expr.Name {
 		case "count", "min", "max", "sum", "first", "last", "mean":
@@ -194,12 +193,19 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 		}
 	}
 
-	// Must be a variable reference.
-	arg0, ok := expr.Args[0].(*influxql.VarRef)
-	if !ok {
+	// Must be a variable reference, wildcard, or regexp.
+	switch arg0 := expr.Args[0].(type) {
+	case *influxql.VarRef:
+		return c.global.compileVarRef(arg0, out)
+	case *influxql.Wildcard:
+		c.wildcardFunction(expr.Name)
+		return nil
+	case *influxql.RegexLiteral:
+		c.wildcardFunctionFilter(expr.Name, arg0.Val)
+		return nil
+	default:
 		return fmt.Errorf("expected field argument in %s()", expr.Name)
 	}
-	return c.global.compileVarRef(arg0, out)
 }
 
 func (c *compiledStatement) linkAuxiliaryFields() error {
@@ -297,6 +303,36 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 	return c.global.compileVarRef(ref, out)
 }
 
+func (c *compiledField) wildcard() {
+	if c.Wildcard == nil {
+		c.Wildcard = &wildcard{
+			TypeFilters: make(map[influxql.DataType]struct{}),
+		}
+	}
+}
+
+func (c *compiledField) wildcardFilter(filter *regexp.Regexp) {
+	c.wildcard()
+	c.Wildcard.NameFilters = append(c.Wildcard.NameFilters, filter)
+}
+
+func (c *compiledField) wildcardFunction(name string) {
+	c.wildcard()
+	switch name {
+	default:
+		c.Wildcard.TypeFilters[influxql.String] = struct{}{}
+	case "count", "first", "last", "distinct", "elapsed", "mode", "sample":
+		c.Wildcard.TypeFilters[influxql.Boolean] = struct{}{}
+	case "min", "max":
+		// No restrictions.
+	}
+}
+
+func (c *compiledField) wildcardFunctionFilter(name string, filter *regexp.Regexp) {
+	c.wildcardFunction(name)
+	c.Wildcard.NameFilters = append(c.Wildcard.NameFilters, filter)
+}
+
 func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, out *WriteEdge) error {
 	merge := &Merge{Output: out}
 	for _, source := range c.Sources {
@@ -371,6 +407,7 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 				}
 			}
 		case *influxql.Wildcard:
+			return nil, errors.New("unimplemented")
 		case *influxql.RegexLiteral:
 			return nil, errors.New("unimplemented")
 		default:
@@ -407,4 +444,15 @@ func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, error) {
 		out = append(out, f.Output)
 	}
 	return out, nil
+}
+
+// requireAuxiliaryFields signals to the global state that we will need
+// auxiliary fields to resolve some of the symbols. Instantiating it here lets
+// us return an error if auxiliary fields are not compatible with some other
+// part of the global state before we start contacting the shards for type
+// information.
+func (c *compiledStatement) requireAuxiliaryFields() {
+	if c.AuxiliaryFields == nil {
+		c.AuxiliaryFields = &AuxiliaryFields{}
+	}
 }
