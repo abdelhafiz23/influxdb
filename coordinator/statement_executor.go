@@ -607,17 +607,6 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		opt.MinTime = time.Unix(0, influxql.MinTime).UTC()
 	}
 
-	// Convert DISTINCT into a call.
-	stmt.RewriteDistinct()
-
-	// Remove "time" from fields list.
-	stmt.RewriteTimeFields()
-
-	// Rewrite time condition.
-	if err := stmt.RewriteTimeCondition(now); err != nil {
-		return nil, stmt, err
-	}
-
 	// Rewrite any regex conditions that could make use of the index.
 	stmt.RewriteRegexConditions()
 
@@ -662,6 +651,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 	plan := query.NewPlan()
 	plan.MetaClient = e.MetaClient
 	plan.TSDBStore = e.TSDBStore
+	plan.ShardMapper = e.ShardMapper
 	edges, err := c.Select(plan)
 	if err != nil {
 		return nil, stmt, err

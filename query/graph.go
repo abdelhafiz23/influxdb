@@ -192,7 +192,7 @@ var _ Node = &IteratorCreator{}
 
 type IteratorCreator struct {
 	Expr            influxql.Expr
-	AuxiliaryFields **AuxiliaryFields
+	AuxiliaryFields *AuxiliaryFields
 	Measurement     *influxql.Measurement
 	Output          *WriteEdge
 }
@@ -232,8 +232,8 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 
 	// Lookup the shards.
 	var auxFields []influxql.VarRef
-	if ic.AuxiliaryFields != nil && *ic.AuxiliaryFields != nil {
-		auxFields = (*ic.AuxiliaryFields).Aux
+	if ic.AuxiliaryFields != nil {
+		auxFields = ic.AuxiliaryFields.Aux
 	}
 	for _, shardInfo := range shards {
 		sh := &ShardIteratorCreator{

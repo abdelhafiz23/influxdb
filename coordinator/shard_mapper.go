@@ -1,25 +1,18 @@
 package coordinator
 
 import (
-	"io"
 	"time"
 
 	"github.com/influxdata/influxdb/influxql"
+	"github.com/influxdata/influxdb/query"
 	"github.com/influxdata/influxdb/services/meta"
 	"github.com/influxdata/influxdb/tsdb"
 )
 
-// IteratorCreator is an interface that combines mapping fields and creating iterators.
-type IteratorCreator interface {
-	influxql.IteratorCreator
-	influxql.FieldMapper
-	io.Closer
-}
-
 // ShardMapper retrieves and maps shards into an IteratorCreator that can later be
 // used for executing queries.
 type ShardMapper interface {
-	MapShards(sources influxql.Sources, opt *influxql.SelectOptions) (IteratorCreator, error)
+	MapShards(sources influxql.Sources, opt *influxql.SelectOptions) (query.ShardGroup, error)
 }
 
 // LocalShardMapper implements a ShardMapper for local shards.
@@ -34,7 +27,7 @@ type LocalShardMapper struct {
 }
 
 // MapShards maps the sources to the appropriate shards into an IteratorCreator.
-func (e *LocalShardMapper) MapShards(sources influxql.Sources, opt *influxql.SelectOptions) (IteratorCreator, error) {
+func (e *LocalShardMapper) MapShards(sources influxql.Sources, opt *influxql.SelectOptions) (query.ShardGroup, error) {
 	a := &LocalShardMapping{
 		ShardMap: make(map[Source]tsdb.ShardGroup),
 	}

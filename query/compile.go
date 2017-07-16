@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"sort"
+
 	"github.com/influxdata/influxdb/influxql"
 )
 
@@ -108,6 +110,11 @@ type compiledField struct {
 	// Wildcard contains the wildcard expression to be used when resolving
 	// wildcards.
 	Wildcard *wildcard
+
+	// WildcardRef holds the resolved wildcard reference. Each field can
+	// only have a wildcard resolve to a single field or tag.
+	// This should not be set at the same time as Wildcard.
+	WildcardRef *influxql.VarRef
 }
 
 // compileExpr creates the node that executes the expression and connects that
@@ -118,16 +125,20 @@ func (c *compiledField) compileExpr(expr influxql.Expr, out *WriteEdge) error {
 		// A bare variable reference will require auxiliary fields.
 		c.global.requireAuxiliaryFields()
 		// Add a symbol that resolves to this write edge.
-		// TODO(jsternberg): Add symbol resolution.
+		c.Symbols.Table[out] = &AuxiliarySymbol{Ref: expr}
 		return nil
 	case *influxql.Wildcard:
 		// Wildcards use auxiliary fields. We assume there will be at least one
 		// expansion.
 		c.global.requireAuxiliaryFields()
 		c.wildcard()
+		c.Symbols.Table[out] = &AuxiliaryWildcardSymbol{}
+		return nil
 	case *influxql.RegexLiteral:
 		c.global.requireAuxiliaryFields()
 		c.wildcardFilter(expr.Val)
+		c.Symbols.Table[out] = &AuxiliaryWildcardSymbol{}
+		return nil
 	case *influxql.Call:
 		switch expr.Name {
 		case "count", "min", "max", "sum", "first", "last", "mean":
@@ -201,7 +212,7 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 	// Must be a variable reference, wildcard, or regexp.
 	switch arg0 := expr.Args[0].(type) {
 	case *influxql.VarRef:
-		return c.global.compileVarRef(arg0, out)
+		return c.compileVarRef(arg0, out)
 	case *influxql.Wildcard:
 		c.wildcardFunction(expr.Name)
 		return nil
@@ -234,9 +245,21 @@ func (c *compiledStatement) linkAuxiliaryFields() error {
 			// Create a default IteratorCreator for this AuxiliaryFields.
 			var out *WriteEdge
 			out, c.AuxiliaryFields.Input = AddEdge(nil, c.AuxiliaryFields)
-			if err := c.compileVarRef(nil, out); err != nil {
-				return err
+
+			merge := &Merge{Output: out}
+			for _, source := range c.Sources {
+				switch source := source.(type) {
+				case *influxql.Measurement:
+					ic := &IteratorCreator{
+						AuxiliaryFields: c.AuxiliaryFields,
+						Measurement:     source,
+					}
+					ic.Output = merge.AddInput(ic)
+				default:
+					panic("unimplemented")
+				}
 			}
+			out.Node = merge
 		}
 	}
 	return nil
@@ -264,7 +287,7 @@ func (c *compiledField) compileDistinct(call *influxql.Call, out *WriteEdge, nes
 	out, d.Input = AddEdge(nil, d)
 
 	// Add the variable reference to the graph to complete the graph.
-	return c.global.compileVarRef(arg0, out)
+	return c.compileVarRef(arg0, out)
 }
 
 func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) error {
@@ -306,7 +329,7 @@ func (c *compiledField) compileTopBottom(call *influxql.Call, out *WriteEdge) er
 	out.Node = selector
 
 	out, selector.Input = AddEdge(nil, selector)
-	return c.global.compileVarRef(ref, out)
+	return c.compileVarRef(ref, out)
 }
 
 func (c *compiledField) wildcard() {
@@ -334,27 +357,19 @@ func (c *compiledField) wildcardFunction(name string) {
 	}
 }
 
+func (c *compiledField) resolveSymbols(m ShardGroup) {
+	for out, symbol := range c.Symbols.Table {
+		symbol.resolve(m, c, out)
+	}
+}
+
 func (c *compiledField) wildcardFunctionFilter(name string, filter *regexp.Regexp) {
 	c.wildcardFunction(name)
 	c.Wildcard.NameFilters = append(c.Wildcard.NameFilters, filter)
 }
 
-func (c *compiledStatement) compileVarRef(ref *influxql.VarRef, out *WriteEdge) error {
-	merge := &Merge{Output: out}
-	for _, source := range c.Sources {
-		switch source := source.(type) {
-		case *influxql.Measurement:
-			ic := &IteratorCreator{
-				Expr:            ref,
-				AuxiliaryFields: &c.AuxiliaryFields,
-				Measurement:     source,
-			}
-			ic.Output = merge.AddInput(ic)
-		default:
-			return errors.New("unimplemented")
-		}
-	}
-	out.Node = merge
+func (c *compiledField) compileVarRef(ref *influxql.VarRef, out *WriteEdge) error {
+	c.Symbols.Table[out] = &VarRefSymbol{Ref: ref}
 	return nil
 }
 
@@ -453,7 +468,14 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 		}
 
 		in, out := NewEdge(nil)
-		field := &compiledField{global: c, Field: f, Output: out}
+		field := &compiledField{
+			global: c,
+			Field:  f,
+			Output: out,
+			Symbols: &SymbolTable{
+				Table: make(map[*WriteEdge]Symbol),
+			},
+		}
 		if err := field.compileExpr(f.Expr, in); err != nil {
 			return nil, err
 		}
@@ -461,9 +483,6 @@ func Compile(stmt *influxql.SelectStatement, opt CompileOptions) (CompiledStatem
 	}
 
 	if err := c.validateFields(); err != nil {
-		return nil, err
-	}
-	if err := c.linkAuxiliaryFields(); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -626,12 +645,126 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 }
 
 func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, error) {
-	out := make([]*ReadEdge, 0, len(c.Fields))
+	// Map the shards using the time range and sources.
+	opt := influxql.SelectOptions{MinTime: c.TimeRange.Min, MaxTime: c.TimeRange.Max}
+	mapper, err := plan.ShardMapper.MapShards(c.Sources, &opt)
+	if err != nil {
+		return nil, err
+	}
+	defer mapper.Close()
+
+	// Resolve each of the symbols. This resolves wildcards and any types.
+	// The number of fields returned may be greater than the currently known
+	// number of fields because of wildcards or it could be less.
+	fields := make([]*ReadEdge, 0, len(c.Fields))
 	for _, f := range c.Fields {
-		plan.AddTarget(f.Output)
-		out = append(out, f.Output)
+		outputs, err := c.link(f, mapper)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, outputs...)
+	}
+
+	if err := c.linkAuxiliaryFields(); err != nil {
+		return nil, err
+	}
+
+	out := make([]*ReadEdge, 0, len(fields))
+	for _, f := range fields {
+		plan.AddTarget(f)
+		out = append(out, f)
 	}
 	return out, nil
+}
+
+func (c *compiledStatement) link(f *compiledField, m ShardGroup) ([]*ReadEdge, error) {
+	// Resolve the wildcards for this field if they exist.
+	if f.Wildcard != nil {
+		fields, err := f.resolveWildcards(m)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(fields) == 0 {
+			return nil, nil
+		}
+
+		outputs := make([]*ReadEdge, 0, len(fields))
+		for _, f := range fields {
+			outs, err := c.link(f, m)
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, outs...)
+		}
+		return outputs, nil
+	}
+
+	// Resolve all of the symbols for this field.
+	f.resolveSymbols(m)
+	return []*ReadEdge{f.Output}, nil
+}
+
+func (c *compiledField) resolveWildcards(m ShardGroup) ([]*compiledField, error) {
+	// Retrieve the field dimensions from the shard mapper.
+	fields, dimensions, err := influxql.FieldDimensions(c.global.Sources, m)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter out any dimensions that are included in the dimensions.
+	for _, d := range c.global.Dimensions {
+		delete(dimensions, d)
+	}
+	// Add the remaining dimensions to the field mapping.
+	for d := range dimensions {
+		fields[d] = influxql.Tag
+	}
+	dimensions = nil
+
+	// Filter out any fields that do not pass the filter or are not an allowed type.
+	for key, typ := range fields {
+		if typ == influxql.Tag {
+			typ = influxql.String
+		}
+		if _, ok := c.Wildcard.TypeFilters[typ]; ok {
+			// Filter out this type since it is not compatible with something.
+			delete(fields, key)
+			continue
+		}
+
+		// If a single filter fails, then delete this field.
+		for _, filter := range c.Wildcard.NameFilters {
+			if !filter.MatchString(key) {
+				delete(fields, key)
+				break
+			}
+		}
+	}
+
+	// Exit early if there are no matching fields/tags.
+	if len(fields) == 0 {
+		return nil, nil
+	}
+
+	// Sort the field names.
+	names := make([]string, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Clone the compiled field once for every wildcard expansion.
+	clones := make([]*compiledField, 0, len(names))
+	for _, name := range names {
+		clone := c.Clone()
+		clone.WildcardRef = &influxql.VarRef{
+			Val:  name,
+			Type: fields[name],
+		}
+		clones = append(clones, clone)
+	}
+	return clones, nil
 }
 
 // requireAuxiliaryFields signals to the global state that we will need
