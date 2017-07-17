@@ -233,6 +233,7 @@ func (c *compiledStatement) linkAuxiliaryFields() {
 			switch source := source.(type) {
 			case *influxql.Measurement:
 				ic := &IteratorCreator{
+					TimeRange:       c.TimeRange,
 					AuxiliaryFields: c.AuxiliaryFields,
 					Measurement:     source,
 				}

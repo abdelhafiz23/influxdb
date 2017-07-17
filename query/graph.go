@@ -194,6 +194,7 @@ type IteratorCreator struct {
 	Expr            influxql.Expr
 	AuxiliaryFields *AuxiliaryFields
 	Measurement     *influxql.Measurement
+	TimeRange       TimeRange
 	Output          *WriteEdge
 }
 
@@ -237,10 +238,11 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 	}
 	for _, shardInfo := range shards {
 		sh := &ShardIteratorCreator{
-			Expr:    ic.Expr,
-			Aux:     auxFields,
-			Ref:     ic.Measurement.Name,
-			ShardID: shardInfo.ID,
+			Expr:      ic.Expr,
+			TimeRange: ic.TimeRange,
+			Aux:       auxFields,
+			Ref:       ic.Measurement.Name,
+			ShardID:   shardInfo.ID,
 		}
 		sh.Output = merge.AddInput(sh)
 	}
@@ -253,11 +255,12 @@ func (ic *IteratorCreator) Execute(plan *Plan) error {
 var _ Node = &ShardIteratorCreator{}
 
 type ShardIteratorCreator struct {
-	Expr    influxql.Expr
-	Aux     []influxql.VarRef
-	Ref     string
-	ShardID uint64
-	Output  *WriteEdge
+	Expr      influxql.Expr
+	TimeRange TimeRange
+	Aux       []influxql.VarRef
+	Ref       string
+	ShardID   uint64
+	Output    *WriteEdge
 }
 
 func (sh *ShardIteratorCreator) Description() string {
@@ -277,8 +280,8 @@ func (sh *ShardIteratorCreator) Execute(plan *Plan) error {
 	opt := influxql.IteratorOptions{
 		Expr:      sh.Expr,
 		Aux:       sh.Aux,
-		StartTime: influxql.MinTime,
-		EndTime:   influxql.MaxTime,
+		StartTime: sh.TimeRange.Min.UnixNano(),
+		EndTime:   sh.TimeRange.Max.UnixNano(),
 		Ascending: true,
 	}
 	itr, err := shard.CreateIterator(sh.Ref, opt)
