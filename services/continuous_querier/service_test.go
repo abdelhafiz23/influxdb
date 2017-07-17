@@ -461,6 +461,71 @@ func TestExecuteContinuousQuery_TimeRange(t *testing.T) {
 	}
 }
 
+// Test the time range for different CQ durations.
+func TestExecuteContinuousQuery_TimeZone(t *testing.T) {
+	// Choose a start date that is not on an interval border for anyone.
+	for _, tt := range []struct {
+		name       string
+		d          string
+		start, end time.Time
+	}{
+		{
+			name:  "DaylightSavingsStart",
+			d:     "1d",
+			start: mustParseTime(t, "2000-04-02T00:00:00-05:00"),
+			end:   mustParseTime(t, "2000-04-03T00:00:00-04:00"),
+		},
+		{
+			name:  "DaylightSavingsEnd",
+			d:     "1d",
+			start: mustParseTime(t, "2000-10-29T00:00:00-04:00"),
+			end:   mustParseTime(t, "2000-10-30T00:00:00-05:00"),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewTestService(t)
+			mc := NewMetaClient(t)
+			mc.CreateDatabase("db", "")
+			mc.CreateContinuousQuery("db", "cq",
+				fmt.Sprintf(`CREATE CONTINUOUS QUERY cq ON db BEGIN SELECT mean(value) INTO cpu_mean FROM cpu GROUP BY time(%s) TZ('America/New_York') END`, tt.d))
+			s.MetaClient = mc
+
+			// Set RunInterval high so we can trigger using Run method.
+			s.RunInterval = 10 * time.Minute
+			done := make(chan struct{})
+
+			// Set a callback for ExecuteStatement.
+			s.QueryExecutor.StatementExecutor = &StatementExecutor{
+				ExecuteStatementFn: func(stmt influxql.Statement, ctx influxql.ExecutionContext) error {
+					s := stmt.(*influxql.SelectStatement)
+					min, max, err := influxql.TimeRange(s.Condition)
+					max = max.Add(time.Nanosecond)
+					if err != nil {
+						t.Errorf("unexpected error parsing time range: %s", err)
+					} else if !tt.start.Equal(min) || !tt.end.Equal(max) {
+						t.Errorf("mismatched time range: got=(%s, %s) exp=(%s, %s)", min, max, tt.start, tt.end)
+					}
+					done <- struct{}{}
+					ctx.Results <- &influxql.Result{}
+					return nil
+				},
+			}
+
+			s.Open()
+			defer s.Close()
+
+			// Send an initial run request one nanosecond after the start to
+			// prime the last CQ map.
+			s.RunCh <- &RunRequest{Now: tt.start.Add(time.Nanosecond)}
+			// Execute the real request after the time interval.
+			s.RunCh <- &RunRequest{Now: tt.end}
+			if err := wait(done, 100*time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 // Test ExecuteContinuousQuery when QueryExecutor returns an error.
 func TestExecuteContinuousQuery_QueryExecutor_Error(t *testing.T) {
 	s := NewTestService(t)

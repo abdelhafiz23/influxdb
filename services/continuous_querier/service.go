@@ -287,6 +287,13 @@ func (s *Service) ExecuteContinuousQuery(dbi *meta.DatabaseInfo, cqi *meta.Conti
 		return false, err
 	}
 
+	// Set the time zone on the now time if the CQ has one. Otherwise, force UTC.
+	if cq.q.Location != nil {
+		now = now.In(cq.q.Location)
+	} else {
+		now = now.UTC()
+	}
+
 	// Get the last time this CQ was run from the service's cache.
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,10 +307,8 @@ func (s *Service) ExecuteContinuousQuery(dbi *meta.DatabaseInfo, cqi *meta.Conti
 
 	// Get the group by interval.
 	interval, err := cq.q.GroupByInterval()
-	if err != nil {
+	if err != nil || interval == 0 {
 		return false, err
-	} else if interval == 0 {
-		return false, nil
 	}
 
 	// Get the group by offset.
@@ -496,12 +501,26 @@ func (cq *ContinuousQuery) shouldRunContinuousQuery(now time.Time, interval time
 	// Determine if we should run the continuous query based on the last time it ran.
 	// If the query never ran, execute it using the current time.
 	if cq.HasRun {
+		// Retrieve the current zone offset.
+		_, startOffset := cq.LastRun.Zone()
 		nextRun := cq.LastRun.Add(resampleEvery)
+		// Retrieve the end zone offset.
+		if _, endOffset := nextRun.Zone(); startOffset != endOffset {
+			diff := int64(startOffset-endOffset) * int64(time.Second)
+			if abs(diff) < int64(resampleEvery) {
+				nextRun = nextRun.Add(time.Duration(diff))
+			}
+		}
 		if nextRun.UnixNano() <= now.UnixNano() {
 			return true, nextRun, nil
 		}
 	} else {
-		return true, now, nil
+		// Retrieve the location from the CQ.
+		loc := cq.q.Location
+		if loc == nil {
+			loc = time.UTC
+		}
+		return true, now.In(loc), nil
 	}
 
 	return false, cq.LastRun, nil
@@ -519,11 +538,32 @@ func assert(condition bool, msg string, v ...interface{}) {
 // while the start of the week for the unix timestamp is a Thursday.
 func truncate(ts time.Time, d time.Duration) time.Time {
 	t := ts.UnixNano()
+	offset := zone(ts)
+	t += offset
 	dt := t % int64(d)
 	if dt < 0 {
 		// Negative modulo rounds up instead of down, so offset
 		// with the duration.
 		dt += int64(d)
 	}
-	return time.Unix(0, t-dt).UTC()
+	ts = time.Unix(0, t-dt-offset).In(ts.Location())
+	if adjustedOffset := zone(ts); adjustedOffset != offset {
+		diff := offset - adjustedOffset
+		if abs(diff) < int64(d) {
+			ts = ts.Add(time.Duration(diff))
+		}
+	}
+	return ts
+}
+
+func zone(ts time.Time) int64 {
+	_, offset := ts.Zone()
+	return int64(offset) * int64(time.Second)
+}
+
+func abs(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
