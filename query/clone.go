@@ -146,10 +146,17 @@ func (c *cloner) clone(v reflect.Value, unvisited *list.List) reflect.Value {
 			return reflect.ValueOf(clone).Elem()
 		}
 
-		// Iterate through all of the fields in the original node and clone them.
+		// Create a new copy of the struct using the old values.
 		clone := reflect.New(v.Type()).Elem()
+		clone.Set(v)
+
+		// Iterate through all of the fields in the original node
+		// and clone it into the new one if it is a read or write edge.
 		for i := 0; i < v.NumField(); i++ {
 			f := v.Field(i)
+			if !f.CanSet() {
+				continue
+			}
 			clone.Field(i).Set(c.clone(f, unvisited))
 		}
 		return clone

@@ -355,7 +355,7 @@ func (m *Merge) Optimize() {
 		// Create a new function call and insert it at the end of every
 		// input to the merge node.
 		for _, input := range m.InputNodes {
-			call := &FunctionCall{Name: node.Name}
+			call := &FunctionCall{Name: node.Name, TimeRange: node.TimeRange}
 			call.Input, call.Output = input.Insert(call)
 		}
 
@@ -369,10 +369,11 @@ func (m *Merge) Optimize() {
 var _ Node = &FunctionCall{}
 
 type FunctionCall struct {
-	Name   string
-	Arg    influxql.VarRef
-	Input  *ReadEdge
-	Output *WriteEdge
+	Name      string
+	Arg       influxql.VarRef
+	TimeRange TimeRange
+	Input     *ReadEdge
+	Output    *WriteEdge
 }
 
 func (c *FunctionCall) Description() string {
