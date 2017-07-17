@@ -697,8 +697,6 @@ func DecodeIntegerBlock(block []byte, a *[]IntegerValue) ([]IntegerValue, error)
 	return (*a)[:i], err
 }
 
-// {{{
-
 // UnsignedValue represents an int64 value.
 type UnsignedValue struct {
 	unixnano int64

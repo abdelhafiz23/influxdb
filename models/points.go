@@ -159,6 +159,9 @@ type FieldIterator interface {
 	// IntegerValue returns the integer value of the current field.
 	IntegerValue() (int64, error)
 
+	// UnsignedValue returns the unsigned value of the current field.
+	UnsignedValue() (uint64, error)
+
 	// BooleanValue returns the boolean value of the current field.
 	BooleanValue() (bool, error)
 
@@ -207,6 +210,12 @@ type point struct {
 
 	it fieldIterator
 }
+
+// type assertions
+var (
+	_ Point         = (*point)(nil)
+	_ FieldIterator = (*point)(nil)
+)
 
 const (
 	// the number of characters for the largest possible int64 (9223372036854775807)
@@ -1318,6 +1327,11 @@ func NewPointFromBytes(b []byte) (Point, error) {
 			if err != nil {
 				return nil, fmt.Errorf("unable to unmarshal field %s: %s", string(iter.FieldKey()), err)
 			}
+		case Unsigned:
+			_, err := iter.UnsignedValue()
+			if err != nil {
+				return nil, fmt.Errorf("unable to unmarshal field %s: %s", string(iter.FieldKey()), err)
+			}
 		case String:
 			// Skip since this won't return an error
 		case Boolean:
@@ -1677,6 +1691,12 @@ func (p *point) unmarshalBinary() (Fields, error) {
 			fields[string(iter.FieldKey())] = v
 		case Integer:
 			v, err := iter.IntegerValue()
+			if err != nil {
+				return nil, fmt.Errorf("unable to unmarshal field %s: %s", string(iter.FieldKey()), err)
+			}
+			fields[string(iter.FieldKey())] = v
+		case Unsigned:
+			v, err := iter.UnsignedValue()
 			if err != nil {
 				return nil, fmt.Errorf("unable to unmarshal field %s: %s", string(iter.FieldKey()), err)
 			}
@@ -2109,6 +2129,15 @@ func (p *point) IntegerValue() (int64, error) {
 	n, err := parseIntBytes(p.it.valueBuf, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("unable to parse integer value %q: %v", p.it.valueBuf, err)
+	}
+	return n, nil
+}
+
+// UnsignedValue returns the unsigned value of the current field.
+func (p *point) UnsignedValue() (uint64, error) {
+	n, err := parseUintBytes(p.it.valueBuf, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("unable to parse unsigned value %q: %v", p.it.valueBuf, err)
 	}
 	return n, nil
 }
