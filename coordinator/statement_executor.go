@@ -410,7 +410,7 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 	plan := query.NewPlan()
 	plan.DryRun = true
 	plan.MetaClient = e.MetaClient
-	if _, err := c.Select(plan); err != nil {
+	if _, _, err := c.Select(plan); err != nil {
 		return nil, err
 	}
 
@@ -487,14 +487,16 @@ func (e *StatementExecutor) executeSetPasswordUserStatement(q *influxql.SetPassw
 }
 
 func (e *StatementExecutor) executeSelectStatement(stmt *influxql.SelectStatement, ctx *influxql.ExecutionContext) error {
-	itrs, stmt, err := e.createIterators(stmt, ctx)
+	itrs, columns, err := e.createIterators(stmt, ctx)
 	if err != nil {
 		return err
 	}
 
 	// Generate a row emitter from the iterator set.
 	em := influxql.NewEmitter(itrs, stmt.TimeAscending(), ctx.ChunkSize)
-	em.Columns = stmt.ColumnNames()
+	em.Columns = make([]string, 0, len(columns)+1)
+	em.Columns = append(em.Columns, stmt.TimeFieldName())
+	em.Columns = append(em.Columns, columns...)
 	if stmt.Location != nil {
 		em.Location = stmt.Location
 	}
@@ -580,7 +582,7 @@ func (e *StatementExecutor) executeSelectStatement(stmt *influxql.SelectStatemen
 	return nil
 }
 
-func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx *influxql.ExecutionContext) ([]influxql.Iterator, *influxql.SelectStatement, error) {
+func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx *influxql.ExecutionContext) ([]influxql.Iterator, []string, error) {
 	// It is important to "stamp" this time so that everywhere we evaluate `now()` in the statement is EXACTLY the same `now`
 	now := time.Now().UTC()
 	opt := influxql.SelectOptions{
@@ -597,7 +599,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 	var err error
 	opt.MinTime, opt.MaxTime, err = influxql.TimeRange(stmt.Condition)
 	if err != nil {
-		return nil, stmt, err
+		return nil, nil, err
 	}
 
 	if opt.MaxTime.IsZero() {
@@ -610,24 +612,10 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 	// Rewrite any regex conditions that could make use of the index.
 	stmt.RewriteRegexConditions()
 
-	// Create an iterator creator based on the shards in the cluster.
-	ic, err := e.ShardMapper.MapShards(stmt.Sources, &opt)
-	if err != nil {
-		return nil, stmt, err
-	}
-	defer ic.Close()
-
-	// Rewrite wildcards, if any exist.
-	tmp, err := stmt.RewriteFields(ic)
-	if err != nil {
-		return nil, stmt, err
-	}
-	stmt = tmp
-
 	if e.MaxSelectBucketsN > 0 && !stmt.IsRawQuery {
 		interval, err := stmt.GroupByInterval()
 		if err != nil {
-			return nil, stmt, err
+			return nil, nil, err
 		}
 
 		if interval > 0 {
@@ -638,23 +626,23 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 			// Determine the number of buckets by finding the time span and dividing by the interval.
 			buckets := int64(max.Sub(min)) / int64(interval)
 			if int(buckets) > e.MaxSelectBucketsN {
-				return nil, stmt, fmt.Errorf("max-select-buckets limit exceeded: (%d/%d)", buckets, e.MaxSelectBucketsN)
+				return nil, nil, fmt.Errorf("max-select-buckets limit exceeded: (%d/%d)", buckets, e.MaxSelectBucketsN)
 			}
 		}
 	}
 
 	c, err := query.Compile(stmt, query.CompileOptions{})
 	if err != nil {
-		return nil, stmt, err
+		return nil, nil, err
 	}
 
 	plan := query.NewPlan()
 	plan.MetaClient = e.MetaClient
 	plan.TSDBStore = e.TSDBStore
 	plan.ShardMapper = e.ShardMapper
-	edges, err := c.Select(plan)
+	edges, cols, err := c.Select(plan)
 	if err != nil {
-		return nil, stmt, err
+		return nil, nil, err
 	}
 
 	for {
@@ -663,7 +651,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 			break
 		}
 		if err := node.Execute(plan); err != nil {
-			return nil, stmt, err
+			return nil, nil, err
 		}
 		plan.NodeFinished(node)
 	}
@@ -677,7 +665,7 @@ func (e *StatementExecutor) createIterators(stmt *influxql.SelectStatement, ctx 
 		monitor := influxql.PointLimitMonitor(itrs, influxql.DefaultStatsInterval, e.MaxSelectPointN)
 		ctx.Query.Monitor(monitor)
 	}
-	return itrs, stmt, nil
+	return itrs, cols, nil
 }
 
 func (e *StatementExecutor) executeShowContinuousQueriesStatement(stmt *influxql.ShowContinuousQueriesStatement) (models.Rows, error) {

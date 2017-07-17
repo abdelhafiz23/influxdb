@@ -12,17 +12,6 @@ import (
 	"github.com/influxdata/influxdb/influxql"
 )
 
-// stuff that needs to be known globally
-// global state, which is changed by each field that gets compiled.
-// global constants or configuration which never changes. might not be worth separating those.
-// a list of the function calls that happen.
-// whether or not auxiliary fields are needed.
-
-// the final field that is constructed after linking
-type Field struct {
-	Name string // the resolved name of the field
-}
-
 type CompileOptions struct {
 	Now time.Time
 }
@@ -71,7 +60,7 @@ type compiledStatement struct {
 }
 
 type CompiledStatement interface {
-	Select(plan *Plan) ([]*ReadEdge, error)
+	Select(plan *Plan) ([]*ReadEdge, []string, error)
 }
 
 func newCompiler(stmt *influxql.SelectStatement, opt CompileOptions) *compiledStatement {
@@ -656,37 +645,45 @@ func getTimeRange(op influxql.Token, rhs influxql.Expr, valuer influxql.Valuer) 
 	return timeRange, nil
 }
 
-func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, error) {
+func (c *compiledStatement) Select(plan *Plan) ([]*ReadEdge, []string, error) {
 	// Map the shards using the time range and sources.
 	opt := influxql.SelectOptions{MinTime: c.TimeRange.Min, MaxTime: c.TimeRange.Max}
 	mapper, err := plan.ShardMapper.MapShards(c.Sources, &opt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer mapper.Close()
 
 	// Resolve each of the symbols. This resolves wildcards and any types.
 	// The number of fields returned may be greater than the currently known
 	// number of fields because of wildcards or it could be less.
-	fields := make([]*ReadEdge, 0, len(c.Fields))
+	fields := make([]*compiledField, 0, len(c.Fields))
 	for _, f := range c.Fields {
 		outputs, err := c.link(f, mapper)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		fields = append(fields, outputs...)
 	}
 	c.linkAuxiliaryFields()
 
-	out := make([]*ReadEdge, 0, len(fields))
-	for _, f := range fields {
-		plan.AddTarget(f)
-		out = append(out, f)
+	// Determine the names for each field and fill the output slice.
+	// TODO(jsternberg): Resolve name conflicts.
+	outputs := make([]*ReadEdge, len(fields))
+	columns := make([]string, len(fields))
+	for i, f := range fields {
+		outputs[i] = f.Output
+		columns[i] = f.Name()
 	}
-	return out, nil
+
+	// Add all of the field outputs to the plan as targets.
+	for _, out := range outputs {
+		plan.AddTarget(out)
+	}
+	return outputs, columns, nil
 }
 
-func (c *compiledStatement) link(f *compiledField, m ShardGroup) ([]*ReadEdge, error) {
+func (c *compiledStatement) link(f *compiledField, m ShardGroup) ([]*compiledField, error) {
 	// Resolve the wildcards for this field if they exist.
 	if f.Wildcard != nil {
 		fields, err := f.resolveWildcards(m)
@@ -694,24 +691,15 @@ func (c *compiledStatement) link(f *compiledField, m ShardGroup) ([]*ReadEdge, e
 			return nil, err
 		}
 
-		if len(fields) == 0 {
-			return nil, nil
-		}
-
-		outputs := make([]*ReadEdge, 0, len(fields))
 		for _, f := range fields {
-			outs, err := c.link(f, m)
-			if err != nil {
-				return nil, err
-			}
-			outputs = append(outputs, outs...)
+			f.resolveSymbols(m)
 		}
-		return outputs, nil
+		return fields, nil
 	}
 
 	// Resolve all of the symbols for this field.
 	f.resolveSymbols(m)
-	return []*ReadEdge{f.Output}, nil
+	return []*compiledField{f}, nil
 }
 
 func (c *compiledField) resolveWildcards(m ShardGroup) ([]*compiledField, error) {
@@ -757,7 +745,7 @@ func (c *compiledField) resolveWildcards(m ShardGroup) ([]*compiledField, error)
 	}
 
 	// Sort the field names.
-	names := make([]string, len(fields))
+	names := make([]string, 0, len(fields))
 	for name := range fields {
 		names = append(names, name)
 	}
@@ -774,6 +762,19 @@ func (c *compiledField) resolveWildcards(m ShardGroup) ([]*compiledField, error)
 		clones = append(clones, clone)
 	}
 	return clones, nil
+}
+
+// Name returns the name for this field.
+func (c *compiledField) Name() string {
+	name := c.Field.Name()
+	if c.WildcardRef != nil {
+		if name != "" {
+			name = fmt.Sprintf("%s_%s", name, c.WildcardRef.Val)
+		} else {
+			name = c.WildcardRef.Val
+		}
+	}
+	return name
 }
 
 // requireAuxiliaryFields signals to the global state that we will need

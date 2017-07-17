@@ -2,7 +2,6 @@ package query
 
 import (
 	"container/list"
-	"fmt"
 	"reflect"
 
 	"github.com/influxdata/influxdb/influxql"
@@ -56,22 +55,17 @@ func newCloner() *cloner {
 
 func (c *cloner) Clone(out *ReadEdge) *ReadEdge {
 	// Iterate through the ReadEdge and clone every node.
-	c.cloneNodes(out.Input.Node)
-	fmt.Println(len(c.Nodes))
-	fmt.Println(len(c.ReadEdges))
-	fmt.Println(len(c.WriteEdges))
+	v := reflect.ValueOf(out)
+	c.cloneGraph(v)
 	return c.ReadEdges[out]
 }
 
-func (c *cloner) cloneNodes(n Node) {
-	if n == nil {
-		return
-	}
-
+func (c *cloner) cloneGraph(v reflect.Value) {
 	// Clone all of the nodes in the tree. Clone all of the edges, but leave
 	// the edges disconnected from their nodes until we are done cloning nodes.
 	unvisited := list.New()
-	unvisited.PushBack(n)
+	c.clone(v, unvisited)
+
 	for unvisited.Len() > 0 {
 		e := unvisited.Front()
 		unvisited.Remove(e)
