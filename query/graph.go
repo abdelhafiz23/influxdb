@@ -385,6 +385,12 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 		return nil
 	}
 
+	input := c.Input.Iterator()
+	if input == nil {
+		c.Output.SetIterator(input)
+		return nil
+	}
+
 	call := &influxql.Call{
 		Name: c.Name,
 		Args: []influxql.Expr{&c.Arg},
@@ -394,7 +400,7 @@ func (c *FunctionCall) Execute(plan *Plan) error {
 		StartTime: influxql.MinTime,
 		EndTime:   influxql.MaxTime,
 	}
-	itr, err := influxql.NewCallIterator(c.Input.Iterator(), opt)
+	itr, err := influxql.NewCallIterator(input, opt)
 	if err != nil {
 		return err
 	}

@@ -410,6 +410,7 @@ func (e *StatementExecutor) executeExplainStatement(q *influxql.ExplainStatement
 	plan := query.NewPlan()
 	plan.DryRun = true
 	plan.MetaClient = e.MetaClient
+	plan.ShardMapper = e.ShardMapper
 	if _, _, err := c.Select(plan); err != nil {
 		return nil, err
 	}

@@ -207,9 +207,11 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 		return c.compileVarRef(arg0, out)
 	case *influxql.Wildcard:
 		c.wildcardFunction(expr.Name)
+		c.Symbols.Table[out] = &WildcardSymbol{}
 		return nil
 	case *influxql.RegexLiteral:
 		c.wildcardFunctionFilter(expr.Name, arg0.Val)
+		c.Symbols.Table[out] = &WildcardSymbol{}
 		return nil
 	default:
 		return fmt.Errorf("expected field argument in %s()", expr.Name)
@@ -217,6 +219,10 @@ func (c *compiledField) compileFunction(expr *influxql.Call, out *WriteEdge) err
 }
 
 func (c *compiledStatement) linkAuxiliaryFields() {
+	if c.AuxiliaryFields == nil {
+		return
+	}
+
 	if len(c.FunctionCalls) == 0 {
 		// Create a default IteratorCreator for this AuxiliaryFields.
 		var out *WriteEdge
