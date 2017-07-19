@@ -1047,23 +1047,99 @@ func TestIteratorOptions_Window_Default(t *testing.T) {
 }
 
 func TestIteratorOptions_Window_Location(t *testing.T) {
-	now := time.Date(2000, 4, 2, 12, 14, 15, 0, LosAngeles)
-	opt := influxql.IteratorOptions{
-		Location: LosAngeles,
-		Interval: influxql.Interval{
-			Duration: 24 * time.Hour,
+	for _, tt := range []struct {
+		now        time.Time
+		start, end time.Time
+		interval   time.Duration
+	}{
+		{
+			now:      mustParseTime("2000-04-02T12:14:15-07:00"),
+			start:    mustParseTime("2000-04-02T00:00:00-08:00"),
+			end:      mustParseTime("2000-04-03T00:00:00-07:00"),
+			interval: 24 * time.Hour,
 		},
-	}
-
-	start, end := opt.Window(now.UnixNano())
-	if exp := time.Date(2000, 4, 2, 0, 0, 0, 0, LosAngeles).UnixNano(); start != exp {
-		t.Errorf("expected start to be %d, got %d", exp, start)
-	}
-	if exp := time.Date(2000, 4, 3, 0, 0, 0, 0, LosAngeles).UnixNano(); end != exp {
-		t.Errorf("expected end to be %d, got %d", exp, end)
-	}
-	if got, exp := time.Duration(end-start), 23*time.Hour; got != exp {
-		t.Errorf("expected duration to be %s, got %s", exp, got)
+		{
+			now:      mustParseTime("2000-04-02T01:17:12-08:00"),
+			start:    mustParseTime("2000-04-02T00:00:00-08:00"),
+			end:      mustParseTime("2000-04-03T00:00:00-07:00"),
+			interval: 24 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-04-02T01:14:15-08:00"),
+			start:    mustParseTime("2000-04-02T00:00:00-08:00"),
+			end:      mustParseTime("2000-04-02T03:00:00-07:00"),
+			interval: 2 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-04-02T03:17:12-07:00"),
+			start:    mustParseTime("2000-04-02T03:00:00-07:00"),
+			end:      mustParseTime("2000-04-02T04:00:00-07:00"),
+			interval: 2 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-04-02T01:14:15-08:00"),
+			start:    mustParseTime("2000-04-02T01:00:00-08:00"),
+			end:      mustParseTime("2000-04-02T03:00:00-07:00"),
+			interval: 1 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-04-02T03:17:12-07:00"),
+			start:    mustParseTime("2000-04-02T03:00:00-07:00"),
+			end:      mustParseTime("2000-04-02T04:00:00-07:00"),
+			interval: 1 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-10-29T12:14:15-08:00"),
+			start:    mustParseTime("2000-10-29T00:00:00-07:00"),
+			end:      mustParseTime("2000-10-30T00:00:00-08:00"),
+			interval: 24 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-10-29T01:17:12-07:00"),
+			start:    mustParseTime("2000-10-29T00:00:00-07:00"),
+			end:      mustParseTime("2000-10-30T00:00:00-08:00"),
+			interval: 24 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-10-29T01:14:15-07:00"),
+			start:    mustParseTime("2000-10-29T00:00:00-07:00"),
+			end:      mustParseTime("2000-10-29T02:00:00-08:00"),
+			interval: 2 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-10-29T03:17:12-08:00"),
+			start:    mustParseTime("2000-10-29T02:00:00-08:00"),
+			end:      mustParseTime("2000-10-29T04:00:00-08:00"),
+			interval: 2 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-10-29T01:14:15-07:00"),
+			start:    mustParseTime("2000-10-29T01:00:00-07:00"),
+			end:      mustParseTime("2000-10-29T01:00:00-08:00"),
+			interval: 1 * time.Hour,
+		},
+		{
+			now:      mustParseTime("2000-10-29T02:17:12-07:00"),
+			start:    mustParseTime("2000-10-29T02:00:00-07:00"),
+			end:      mustParseTime("2000-10-29T03:00:00-07:00"),
+			interval: 1 * time.Hour,
+		},
+	} {
+		t.Run(fmt.Sprintf("%s/%s", tt.now, tt.interval), func(t *testing.T) {
+			opt := influxql.IteratorOptions{
+				Location: LosAngeles,
+				Interval: influxql.Interval{
+					Duration: tt.interval,
+				},
+			}
+			start, end := opt.Window(tt.now.UnixNano())
+			if have, want := time.Unix(0, start).In(LosAngeles), tt.start; !have.Equal(want) {
+				t.Errorf("unexpected start time: %s != %s", have, want)
+			}
+			if have, want := time.Unix(0, end).In(LosAngeles), tt.end; !have.Equal(want) {
+				t.Errorf("unexpected end time: %s != %s", have, want)
+			}
+		})
 	}
 }
 
